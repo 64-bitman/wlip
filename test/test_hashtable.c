@@ -1,0 +1,125 @@
+#include "alloc.h"
+#include "hashtable.h"
+#include "unity.h"
+#include <stddef.h>
+
+void
+setUp(void)
+{
+}
+
+void
+tearDown(void)
+{
+}
+
+typedef struct
+{
+    int val;
+    char key[100];
+} item_T;
+
+/*
+ * Test add, lookup, and remove operations on hash table
+ */
+static void
+test_hashtable_basic(void)
+{
+    hashtable_T table;
+
+    hashtable_init(&table);
+
+    // Testing adding
+    for (int i = 0; i < 200; i++)
+    {
+        item_T *item = wlip_malloc(sizeof(item_T));
+
+        snprintf(item->key, 100, "%d", i);
+
+        item->val = i;
+
+        hash_T hash = hash_get(item->key);
+        hashbucket_T *b = hashtable_lookup(&table, item->key, hash);
+
+        hashtable_add(&table, b, item->key, hash);
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(200, table.len);
+    TEST_ASSERT_EQUAL_UINT32(0, table.tombstones_len);
+
+    char buf[100];
+
+    // Test lookup
+    for (int i = 0; i < 200; i++)
+    {
+        snprintf(buf, 100, "%d", i);
+        hashbucket_T *b = hashtable_lookup(&table, buf, hash_get(buf));
+        item_T *item = HB_GET(b, item_T, key);
+
+        TEST_ASSERT_EQUAL_INT(item->val, i);
+    }
+
+    // Test removing
+    for (int i = 0; i < 20; i++)
+    {
+        snprintf(buf, 100, "%d", i);
+        char *s = hashtable_remove(&table, buf);
+
+        TEST_ASSERT_EQUAL_STRING(buf, s);
+
+        wlip_free(HBKEY_GET(s, item_T, key));
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(20, table.tombstones_len);
+
+    hashtable_clear_all(&table, offsetof(item_T, key));
+}
+
+/*
+ * Test if hash table resizes correctly and also rehashes correctly
+ */
+static void
+test_hashtable_resize(void)
+{
+    hashtable_T table;
+
+    hashtable_init(&table);
+
+    for (int i = 0; i < 20000; i++)
+    {
+        char *key = wlip_strdup_printf("%d", i);
+        hash_T hash = hash_get(key);
+        hashbucket_T *b = hashtable_lookup(&table, key, hash);
+
+        hashtable_add(&table, b, key, hash);
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(65536, table.alloc_len);
+
+    // Remove a bunch of entries and add a bunch back again to see if table
+    // shrinks.
+    for (int i = 0; i < 15000; i++)
+    {
+        char *key = wlip_strdup_printf("%d", i);
+
+        wlip_free(hashtable_remove(&table, key));
+        wlip_free(key);
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(16384, table.alloc_len);
+
+    hashtable_clear_all(&table, 0);
+}
+
+int
+main(void)
+{
+    UNITY_BEGIN();
+
+    RUN_TEST(test_hashtable_basic);
+    RUN_TEST(test_hashtable_resize);
+
+    return UNITY_END();
+}
+
+// vim: ts=4 sw=4 sts=4 et
