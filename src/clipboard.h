@@ -5,7 +5,6 @@
 #include "hashtable.h"
 #include "sha256.h"
 #include "util.h"
-#include <uv.h>
 
 #define CLIPBOARD_NAME_MAX_LEN 256
 
@@ -51,7 +50,7 @@ typedef struct
     {
         bool boolean;
         int64_t integer;
-        double fl;
+        double real;
         char *str; // Must be freed
         const char *sstr;
     } val;
@@ -96,11 +95,9 @@ struct clipboard_S
     // Array of Wayland selections that are synced to this clipboard. Each item
     // is a unique integer which identifies the selection.
     array_T selections;
-
-    uv_loop_t *loop; // Libuv loop that this clipboard uses
 };
 
-clipboard_T *clipboard_new(const char *name, uv_loop_t *loop, error_T *error);
+clipboard_T *clipboard_new(const char *name, error_T *error);
 void clipboard_free(clipboard_T *cb);
 clipboard_T *find_clipboard(const char *name);
 

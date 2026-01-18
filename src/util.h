@@ -24,6 +24,14 @@ typedef unsigned char char_u;
 
 #define STRLEN(s) ((uint32_t)strlen(s))
 
+#ifdef __GNUC__
+#    define likely(x) __builtin_expect(!!(x), 1)
+#    define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#    define likely(x) (x)
+#    define unlikely(x) (x)
+#endif
+
 #define FLAG_ON(flags, f)                                                      \
     do                                                                         \
     {                                                                          \
@@ -52,6 +60,7 @@ void
 wlip_log_raw(bool debug, const char *file, int lnum, const char *format, ...);
 
 int64_t get_realtime_us(void);
+int64_t get_montonictime_us(void);
 
 void sha256_hex2digest(const char *str, char_u buf[SHA256_BLOCK_SIZE]);
 

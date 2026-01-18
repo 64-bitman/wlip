@@ -76,7 +76,7 @@ hashtable_clear_all(hashtable_T *self, uint32_t offset)
  * "offset" is same as in hashtable_clear_all().
  */
 void
-hashtable_clear_func(hashtable_T *self, hb_free_func func, uint32_t offset)
+hashtable_clear_func(hashtable_T *self, hb_freefunc_T func, uint32_t offset)
 {
     assert(self != NULL);
     assert(func != NULL);

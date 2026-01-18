@@ -1,5 +1,7 @@
 #include "alloc.h"
+#include "util.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -14,9 +16,9 @@ wlip_malloc(size_t sz)
 {
     void *ptr = malloc(sz);
 
-    if (ptr == NULL)
+    if (unlikely(ptr == NULL))
     {
-        fprintf(stderr, "malloc(%zu) fail\n", sz);
+        fprintf(stderr, "malloc(%zu) fail: %s\n", sz, strerror(errno));
         abort();
     }
 
@@ -31,9 +33,11 @@ wlip_calloc(size_t n, size_t n_size)
 {
     void *ptr = calloc(n, n_size);
 
-    if (ptr == NULL)
+    if (unlikely(ptr == NULL))
     {
-        fprintf(stderr, "calloc(%zu, %zu) fail\n", n, n_size);
+        fprintf(
+            stderr, "calloc(%zu, %zu) fail: %s\n", n, n_size, strerror(errno)
+        );
         abort();
     }
 
@@ -57,9 +61,11 @@ wlip_realloc(void *ptr, size_t new_size)
 {
     void *new = realloc(ptr, new_size);
 
-    if (new == NULL)
+    if (unlikely(new == NULL))
     {
-        fprintf(stderr, "realloc(..., %zu) fail\n", new_size);
+        fprintf(
+            stderr, "realloc(..., %zu) fail: %s\n", new_size, strerror(errno)
+        );
         abort();
     }
 
@@ -76,9 +82,9 @@ wlip_strdup(const char *str)
 
     char *ptr = strdup(str);
 
-    if (ptr == NULL)
+    if (unlikely(ptr == NULL))
     {
-        fprintf(stderr, "strdup(\"%s\") fail\n", str);
+        fprintf(stderr, "strdup(\"%s\") fail: %s\n", str, strerror(errno));
         abort();
     }
 

@@ -3,8 +3,8 @@
 #include "errors.h"
 #include "util.h"
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
-#include <uv.h>
 
 // Table that holds all defined clipboards.
 static hashtable_T CLIPBOARDS;
@@ -14,10 +14,9 @@ static hashtable_T CLIPBOARDS;
  * with same name already exists, then NULL is returned.
  */
 clipboard_T *
-clipboard_new(const char *name, uv_loop_t *loop, error_T *error)
+clipboard_new(const char *name, error_T *error)
 {
     assert(name != NULL);
-    assert(loop != NULL);
     assert(error != NULL);
     assert(ERROR_ISNONE(error));
 
@@ -60,7 +59,6 @@ clipboard_new(const char *name, uv_loop_t *loop, error_T *error)
 
     cb->entry = NULL;
     cb->no_database = false;
-    cb->loop = loop;
     array_init(&cb->selections, sizeof(uint), 2);
 
     // Initialize global table if we haven't.
@@ -154,7 +152,7 @@ clipentry_free(clipentry_T *entry)
     assert(entry != NULL);
 
     hashtable_clear_func(
-        &entry->attributes, (hb_free_func)attribute_free,
+        &entry->attributes, (hb_freefunc_T)attribute_free,
         offsetof(attribute_T, name)
     );
     hashtable_clear_func(&entry->mime_types, NULL, offsetof(mimetype_T, name));

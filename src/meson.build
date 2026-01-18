@@ -1,4 +1,4 @@
-sources += files('alloc.c', 'array.c', 'errors.c', 'hashtable.c', 'util.c', 'wayland.c')
+sources += files('alloc.c', 'array.c', 'loop.c', 'errors.c', 'hashtable.c', 'util.c', 'wayland.c')
 includes += include_directories('.')
 
 subdir('sha256')

@@ -3,17 +3,22 @@ project(
   'c',
   license: 'MIT',
   license_files: 'LICENSE',
-  default_options: ['c_std=gnu11', 'warning_level=2'],
+  default_options: ['c_std=c11', 'warning_level=2', 'b_ndebug=if-release'],
   meson_version: '>= 1.1.0'
+)
+
+add_project_arguments(
+  ['-D_GNU_SOURCE'],
+  language: 'c'
 )
 
 sources = []
 includes = []
 link_with = []
 
-libuv_dep = dependency('libuv')
 sqlite_dep = dependency('sqlite3', version: '>=3.35.0')
 wl_dep = dependency('wayland-client')
+jansson_dep = dependency('jansson')
 
 subdir('src')
 
@@ -30,7 +35,7 @@ wlip = executable(
   sources,
   version_h,
   include_directories: includes,
-  dependencies: [libuv_dep, sqlite_dep, wl_dep],
+  dependencies: [sqlite_dep, wl_dep, jansson_dep],
   link_with: link_with
 )
 

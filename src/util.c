@@ -4,8 +4,8 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
-#include <uv.h>
 
 // If debug messages should be outputted
 static bool DEBUG_ON = false;
@@ -42,9 +42,22 @@ wlip_log_raw(bool debug, const char *file, int lnum, const char *format, ...)
 int64_t
 get_realtime_us(void)
 {
-    uv_timespec64_t ts;
+    struct timespec ts;
 
-    uv_clock_gettime(UV_CLOCK_REALTIME, &ts);
+    assert(clock_gettime(CLOCK_REALTIME, &ts) == 0);
+
+    return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+/*
+ * Get monotonic time in microseconds
+ */
+int64_t
+get_montonictime_us(void)
+{
+    struct timespec ts;
+
+    assert(clock_gettime(CLOCK_MONOTONIC, &ts) == 0);
 
     return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
@@ -58,7 +71,7 @@ hex2byte(char c)
         return c - 'a' + 10;
     if ('A' <= c && c <= 'F')
         return c - 'A' + 10;
-    assert(false);
+    abort();
 }
 
 /*

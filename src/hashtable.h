@@ -14,7 +14,7 @@ typedef struct
                  // string, then bucket is a tombstone.
 } hashbucket_T;
 
-typedef void (*hb_free_func)(void *);
+typedef void (*hb_freefunc_T)(void *);
 
 // Check if bucket is empty (is able to be used)
 #define HB_ISEMPTY(hb) ((hb)->key == NULL || *((hb)->key) == 0)
@@ -52,7 +52,7 @@ void hashtable_init(hashtable_T *self);
 void hashtable_clear(hashtable_T *self);
 void hashtable_clear_all(hashtable_T *self, uint32_t offset);
 void
-hashtable_clear_func(hashtable_T *self, hb_free_func func, uint32_t offset);
+hashtable_clear_func(hashtable_T *self, hb_freefunc_T func, uint32_t offset);
 
 hashbucket_T *hashtable_lookup(hashtable_T *self, const char *key, hash_T hash);
 void
