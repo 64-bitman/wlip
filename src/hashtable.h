@@ -31,6 +31,7 @@ typedef struct
     uint32_t len;            // Number of used items
     uint32_t tombstones_len; // Number of tombstones
     uint32_t alloc_len;      // Allocated length, always a power of 2
+    bool no_resize;          // Don't resize when removing, adding.
 } hashtable_T;
 
 // Struct to iterate through a hash table
@@ -41,7 +42,7 @@ typedef struct
     uint32_t i;     // Current index
 } hashtableiter_T;
 
-#define HASHTABLE_INITIAL_LEN 64
+#define HASHTABLE_INITIAL_LEN 16
 
 #define HASHTABLEITER_INIT(ht) {ht, 0, 0}
 
@@ -59,6 +60,7 @@ hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash);
 void hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket);
 char *hashtable_remove(hashtable_T *self, const char *key);
 
-hashbucket_T *hashtableiter_next(hashtableiter_T *self);
+void *hashtableiter_next(hashtableiter_T *self, uint32_t offset);
+void hashtableiter_remove(hashtableiter_T *self);
 
 // vim: ts=4 sw=4 sts=4 et

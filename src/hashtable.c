@@ -38,6 +38,7 @@ hashtable_init(hashtable_T *self)
     self->len = 0;
     self->tombstones_len = 0;
     self->alloc_len = HASHTABLE_INITIAL_LEN;
+    self->no_resize = false;
 }
 
 /*
@@ -62,10 +63,10 @@ hashtable_clear_all(hashtable_T *self, uint32_t offset)
     assert(self != NULL);
 
     hashtableiter_T iter = HASHTABLEITER_INIT(self);
-    hashbucket_T *b;
+    void *item;
 
-    while ((b = hashtableiter_next(&iter)) != NULL)
-        wlip_free(b->key - offset);
+    while ((item = hashtableiter_next(&iter, offset)) != NULL)
+        wlip_free(item);
 
     hashtable_clear(self);
 }
@@ -81,10 +82,10 @@ hashtable_clear_func(hashtable_T *self, hb_free_func func, uint32_t offset)
     assert(func != NULL);
 
     hashtableiter_T iter = HASHTABLEITER_INIT(self);
-    hashbucket_T *b;
+    void *item;
 
-    while ((b = hashtableiter_next(&iter)) != NULL)
-        func(b->key - offset);
+    while ((item = hashtableiter_next(&iter, offset)) != NULL)
+        func(item);
 
     hashtable_clear(self);
 }
@@ -121,12 +122,16 @@ hashtable_lookup(hashtable_T *self, const char *key, hash_T hash)
 }
 
 /*
- * Resize the hash table depending on load.
+ * Resize the hash table depending on load. Returns true if resized, otherfalse
+ * false.
  */
 static void
 hashtable_resize(hashtable_T *self)
 {
     assert(self != NULL);
+    
+    if (self->no_resize)
+        return;
 
     uint32_t new_alloc;
 
@@ -165,6 +170,7 @@ hashtable_resize(hashtable_T *self)
     }
 
     wlip_free(old_buckets);
+    return;
 }
 
 /*
@@ -189,7 +195,7 @@ hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash)
 }
 
 /*
- * Remove a bucket from the hash table.
+ * Remove a bucket from the hash table. Returns true if resized.
  */
 void
 hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket)
@@ -229,28 +235,52 @@ hashtable_remove(hashtable_T *self, const char *key)
 }
 
 /*
- * Return the next occupied bucket in the hash table. Returns NULL if there are
- * no more occupied buckets.
+ * Return the next item in the hash table. Returns NULL if there are no more
+ * occupied buckets. "offset" must be the offset of the key member within the
+ * item struct.
  */
-hashbucket_T *
-hashtableiter_next(hashtableiter_T *self)
+void *
+hashtableiter_next(hashtableiter_T *self, uint32_t offset)
 {
     assert(self != NULL);
 
     if (self->found >= self->ht->len)
+    {
+        // We may have disabled resizing
+        hashtable_resize(self->ht);
         return NULL;
+    }
 
     hashbucket_T *bucket = self->ht->buckets + self->i;
 
     while (HB_ISEMPTY(bucket))
     {
         if (++self->i >= self->ht->alloc_len)
+        {
+            hashtable_resize(self->ht);
             return NULL;
+        }
         bucket = self->ht->buckets + self->i;
     }
     self->found++;
     self->i++;
-    return bucket;
+    return bucket->key - offset;
+}
+
+/*
+ * Remove the current bucket that the hashtableiter is on from the hash table.
+ * Note that freeing the key must happen AFTER this function call.
+ */
+void
+hashtableiter_remove(hashtableiter_T *self)
+{
+    assert(self != NULL);
+
+    hashbucket_T *bucket = self->ht->buckets + self->i - 1;
+    self->found--;
+    self->ht->no_resize = true;
+    hashtable_remove_bucket(self->ht, bucket);
+    self->ht->no_resize = false;
 }
 
 // vim: ts=4 sw=4 sts=4 et

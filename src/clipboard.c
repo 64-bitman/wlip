@@ -11,14 +11,15 @@ static hashtable_T CLIPBOARDS;
 
 /*
  * Allocate a new clipboard named "name". If the name is invalid or clipboard
- * with same name already exists, an NULL is returned and *error is set.
+ * with same name already exists, then NULL is returned.
  */
 clipboard_T *
-clipboard_new(const char *name, uv_loop_t *loop, int *error)
+clipboard_new(const char *name, uv_loop_t *loop, error_T *error)
 {
     assert(name != NULL);
     assert(loop != NULL);
     assert(error != NULL);
+    assert(ERROR_ISNONE(error));
 
     uint32_t name_len = STRLEN(name);
     hash_T hash = hash_get(name);
@@ -27,7 +28,7 @@ clipboard_new(const char *name, uv_loop_t *loop, int *error)
     // Check if clipboard already exists
     if (!HB_ISEMPTY(b))
     {
-        *error = WLIP_CLIPBOARD_ALREADY_EXISTS;
+        error_set(error, ERROR_EEXIST, "Clipboard '%s' already exists", name);
         return NULL;
     }
 
@@ -36,14 +37,20 @@ clipboard_new(const char *name, uv_loop_t *loop, int *error)
 
     if (name_len >= CLIPBOARD_NAME_MAX_LEN || name_len == 0)
     {
-        *error = WLIP_INVALID_CLIPBOARD_LEN;
+        error_set(
+            error, ERROR_CLIPBOARD_NAME,
+            "Clipboard name '%s' is too long or has length of zero", name
+        );
         return NULL;
     }
 
     for (uint32_t i = 0; i < name_len; i++)
         if (strchr(valid_chars, name[i]) == NULL)
         {
-            *error = WLIP_INVALID_CLIPBOARD_NAME;
+            error_set(
+                error, ERROR_CLIPBOARD_NAME,
+                "Clipboard name '%s' has invalid char '%c'", name[i]
+            );
             return NULL;
         }
 
@@ -51,7 +58,7 @@ clipboard_new(const char *name, uv_loop_t *loop, int *error)
 
     snprintf(cb->name, CLIPBOARD_NAME_MAX_LEN, "%s", name);
 
-    cb->entry.flags = CLIPENTRY_FLAG_EMPTY;
+    cb->entry = NULL;
     cb->no_database = false;
     cb->loop = loop;
     array_init(&cb->selections, sizeof(uint), 2);
@@ -70,8 +77,8 @@ clipboard_free(clipboard_T *cb)
 {
     assert(cb != NULL);
 
-    if (cb->entry.flags & CLIPENTRY_FLAG_READY)
-        clipentry_clear(&cb->entry);
+    if (cb->entry != NULL)
+        clipentry_free(cb->entry);
     array_clear(&cb->selections);
     wlip_free(cb);
 }
@@ -93,14 +100,15 @@ find_clipboard(const char *name)
 }
 
 /*
- * Initialize the entry with the given ID and associate it with "cb". If "id" is
+ * Allocate a new entry with the given ID and associate it with "cb". If "id" is
  * NULL, then the ID is automatically generated.
  */
-void
-clipentry_init(clipentry_T *entry, char id[SHA256_BLOCK_SIZE], clipboard_T *cb)
+clipentry_T *
+clipentry_new(char id[SHA256_BLOCK_SIZE], clipboard_T *cb)
 {
-    assert(entry != NULL);
     assert(cb != NULL);
+
+    clipentry_T *entry = wlip_malloc(sizeof(clipentry_T));
 
     if (id == NULL)
     {
@@ -116,15 +124,32 @@ clipentry_init(clipentry_T *entry, char id[SHA256_BLOCK_SIZE], clipboard_T *cb)
     else
         memcpy(entry->id, id, SHA256_BLOCK_SIZE);
 
-    entry->flags = CLIPENTRY_FLAG_READY;
     entry->clipboard = cb;
 
     hashtable_init(&entry->attributes);
     hashtable_init(&entry->mime_types);
+
+    return entry;
+}
+
+/*
+ * Same as clipentry_new(), but looks up the clipboard_T using the given
+ * clipboard name.
+ */
+clipentry_T *
+clipentry_new_clipname(char id[SHA256_BLOCK_SIZE], const char *clipboard)
+{
+    assert(clipboard != NULL);
+
+    clipboard_T *cb = find_clipboard(clipboard);
+
+    if (cb == NULL)
+        return NULL;
+    return clipentry_new(id, cb);
 }
 
 void
-clipentry_clear(clipentry_T *entry)
+clipentry_free(clipentry_T *entry)
 {
     assert(entry != NULL);
 
@@ -133,6 +158,7 @@ clipentry_clear(clipentry_T *entry)
         offsetof(attribute_T, name)
     );
     hashtable_clear_func(&entry->mime_types, NULL, offsetof(mimetype_T, name));
+    wlip_free(entry);
 }
 
 /*

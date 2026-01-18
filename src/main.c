@@ -1,6 +1,9 @@
 #include "alloc.h"
+#include "errors.h"
 #include "util.h"
 #include "version.h"
+#include "wayland.h"
+#include <assert.h>
 #include <getopt.h>
 #include <stdlib.h>
 #include <uv.h>
@@ -17,10 +20,26 @@ help(void)
     printf("Usage: wlip [OPTION?] - clipboard manager\n");
     printf("\n");
     printf("Options:\n");
-    printf("-v, --version   Show version:\n");
-    printf("-h, --help      Show this message:\n");
-    printf("-d, --debug     Enable debug logging:\n");
+    printf("-v, --version   Show version\n");
+    printf("-h, --help      Show this message\n");
+    printf("-d, --debug     Enable debug logging\n");
     printf("\n");
+}
+
+void
+signal_cb(uv_signal_t *handle, int signum UNUSED)
+{
+    wlip_debug("Exiting...");
+
+    // Close all open handles so the event loop stops
+    uv_close((uv_handle_t *)handle, NULL);
+    wayland_uninit();
+}
+
+static void
+handle_walk_cb(uv_handle_t *handle, void *udata UNUSED)
+{
+    printf("Open handle: %s\n", uv_handle_type_name(handle->type));
 }
 
 int
@@ -53,12 +72,28 @@ main(int argc, char *argv[])
     }
 
     uv_loop_t loop;
+    uv_signal_t signal;
+    error_T error;
 
     uv_loop_init(&loop);
 
+    if (wayland_init(&loop, NULL, &error) == FAIL)
+    {
+        wayland_uninit();
+
+        wlip_log("%s", error.msg);
+        assert(uv_loop_close(&loop) == 0);
+        return EXIT_FAILURE;
+    }
+
+    uv_signal_init(&loop, &signal);
+    uv_signal_start_oneshot(&signal, signal_cb, SIGINT);
+
+    // Used for debugging memory leaks
     uv_run(&loop, UV_RUN_DEFAULT);
 
-    uv_loop_close(&loop);
+    uv_walk(&loop, handle_walk_cb, NULL);
+    assert(uv_loop_close(&loop) == 0);
 
     return EXIT_SUCCESS;
 }

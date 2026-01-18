@@ -9,6 +9,7 @@ project(
 
 sources = []
 includes = []
+link_with = []
 
 libuv_dep = dependency('libuv')
 sqlite_dep = dependency('sqlite3', version: '>=3.35.0')
@@ -30,6 +31,7 @@ wlip = executable(
   version_h,
   include_directories: includes,
   dependencies: [libuv_dep, sqlite_dep, wl_dep],
+  link_with: link_with
 )
 
 subdir('test')

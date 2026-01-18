@@ -2,6 +2,7 @@
 #include "hashtable.h"
 #include "unity.h"
 #include <stddef.h>
+#include <stdlib.h>
 
 void
 setUp(void)
@@ -111,6 +112,45 @@ test_hashtable_resize(void)
     hashtable_clear_all(&table, 0);
 }
 
+/*
+ * Test hash table iterator
+ */
+static void
+test_hashtable_iter(void)
+{
+    hashtable_T table;
+
+    hashtable_init(&table);
+
+    for (int i = 0; i < 10; i++)
+    {
+        char *key = wlip_strdup_printf("%d", i);
+        hash_T hash = hash_get(key);
+        hashbucket_T *b = hashtable_lookup(&table, key, hash);
+
+        hashtable_add(&table, b, key, hash);
+    }
+
+    hashtableiter_T iter = HASHTABLEITER_INIT(&table);
+
+    for (int i = 0; i < 10; i++)
+    {
+        char *key = hashtableiter_next(&iter, 0);
+
+        TEST_ASSERT_NOT_NULL(key);
+
+        long d = strtol(key, NULL, 10);
+
+        TEST_ASSERT_GREATER_THAN_INT(d, 10);
+        TEST_ASSERT_LESS_OR_EQUAL_INT(d, 0);
+
+        hashtableiter_remove(&iter);
+        wlip_free(key);
+    }
+
+    hashtable_clear_all(&table, 0);
+}
+
 int
 main(void)
 {
@@ -118,6 +158,7 @@ main(void)
 
     RUN_TEST(test_hashtable_basic);
     RUN_TEST(test_hashtable_resize);
+    RUN_TEST(test_hashtable_iter);
 
     return UNITY_END();
 }

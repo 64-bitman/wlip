@@ -1,23 +1,28 @@
 #include "errors.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
 
 /*
- * Convert the given error code nto a string. Note that some error strings have
- * format specifiers.
+ * Set the error to the given code and error message. If "error" is NULL, then
+ * this is a no-op. The error must have not been set before.
  */
-const char *
-error_to_string(ErrorCode code)
+void
+error_set(error_T *error, errorcode_T code, const char *fmt, ...)
 {
-    switch (code)
-    {
-    case WLIP_OK:
-        return "Success";
-    case WLIP_INVALID_CLIPBOARD_NAME:
-        return "Clipboard name must only contain alphanumeric and underscore "
-               "characters";
-    case WLIP_INVALID_CLIPBOARD_LEN:
-        return "Clipboard name too long or has length of zero";
-    case WLIP_CLIPBOARD_ALREADY_EXISTS:
-        return "Clipboard of same name '%s' already exists";
-    }
-    return "Unknown error";
+    assert(code >= 0);
+    assert(fmt != NULL);
+
+    if (error == NULL)
+        return;
+
+    assert(error->code == ERROR_NONE);
+
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(error->msg, ERRMSG_SIZE, fmt, ap);
+    va_end(ap);
+    error->code = code;
 }

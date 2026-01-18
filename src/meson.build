@@ -2,3 +2,4 @@ sources += files('alloc.c', 'array.c', 'errors.c', 'hashtable.c', 'util.c', 'way
 includes += include_directories('.')
 
 subdir('sha256')
+subdir('protocol')

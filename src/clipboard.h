@@ -1,6 +1,7 @@
 #pragma once
 
 #include "array.h"
+#include "errors.h"
 #include "hashtable.h"
 #include "sha256.h"
 #include "util.h"
@@ -58,12 +59,6 @@ typedef struct
     char name[1]; // Actually longer (holds the name of the attribute).
 } attribute_T;
 
-typedef enum
-{
-    CLIPENTRY_FLAG_EMPTY, // Entry is empty (equivalent to being NULL)
-    CLIPENTRY_FLAG_READY  // Entry is valid for use
-} clipentry_flag_T;
-
 typedef struct clipboard_S clipboard_T;
 
 // Clipboard entry, each entry has a globally unique identifier. An entry may
@@ -71,7 +66,6 @@ typedef struct clipboard_S clipboard_T;
 typedef struct
 {
     char_u id[SHA256_BLOCK_SIZE];
-    char_u flags;
 
     hashtable_T attributes;
     hashtable_T mime_types;
@@ -80,6 +74,8 @@ typedef struct
     // clipboard doesn't exist anymore.
     clipboard_T *clipboard;
 } clipentry_T;
+
+#define ID_ISEQUAL(a, b) (memcmp((a), (b), SHA256_BLOCK_SIZE) == 0)
 
 // Holds the state for a clipboard. New selections are pushed into the
 // clipboard, which are then propogated to the other selections.
@@ -90,7 +86,7 @@ struct clipboard_S
 
     // The current entry that all selections are synced to. May be NULL if
     // clipboard is cleared.
-    clipentry_T entry;
+    clipentry_T *entry;
 
     // If clipboard is not backed by a database. In this case, entries are not
     // saved persistently, and a clipboard can only have one entry at a time in
@@ -104,13 +100,14 @@ struct clipboard_S
     uv_loop_t *loop; // Libuv loop that this clipboard uses
 };
 
-clipboard_T *clipboard_new(const char *name, uv_loop_t *loop, int *error);
+clipboard_T *clipboard_new(const char *name, uv_loop_t *loop, error_T *error);
 void clipboard_free(clipboard_T *cb);
 clipboard_T *find_clipboard(const char *name);
 
-void
-clipentry_init(clipentry_T *entry, char id[SHA256_BLOCK_SIZE], clipboard_T *cb);
-void clipentry_clear(clipentry_T *entry);
+clipentry_T *clipentry_new(char id[SHA256_BLOCK_SIZE], clipboard_T *cb);
+clipentry_T *
+clipentry_new_clipname(char id[SHA256_BLOCK_SIZE], const char *clipboard);
+void clipentry_free(clipentry_T *entry);
 
 attribute_T *attribute_new(const char *name, attribute_type_T type);
 void attribute_free(attribute_T *attr);

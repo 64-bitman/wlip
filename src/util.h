@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sha256.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h> // IWYU pragma: keep
@@ -9,8 +10,12 @@ typedef unsigned char char_u;
 
 #define NUL 0
 
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
+#ifndef MIN
+#    define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef MAX
+#    define MAX(a, b) (((a) > (b)) ? (a) : (b))
+#endif
 
 #define STRINGIFY_DIRECT(x) #x
 #define STRINGIFY(x) STRINGIFY_DIRECT(x)
@@ -32,9 +37,9 @@ typedef unsigned char char_u;
     } while (false)
 
 #ifdef __GNUC__
-#    define UNUSED(x) UNUSED_##x __attribute__((__unused__))
+#    define UNUSED __attribute__((__unused__))
 #else
-#    define UNUSED(x) UNUSED_##x
+#    define UNUSED
 #endif
 
 #define wlip_log(fmt, ...)                                                     \
@@ -45,6 +50,9 @@ typedef unsigned char char_u;
 void wlip_set_debug(bool state);
 void
 wlip_log_raw(bool debug, const char *file, int lnum, const char *format, ...);
+
 int64_t get_realtime_us(void);
+
+void sha256_hex2digest(const char *str, char_u buf[SHA256_BLOCK_SIZE]);
 
 // vim: ts=4 sw=4 sts=4 et

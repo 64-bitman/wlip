@@ -67,6 +67,25 @@ wlip_realloc(void *ptr, size_t new_size)
 }
 
 /*
+ * Same as strdup() but aborts on failure
+ */
+char *
+wlip_strdup(const char *str)
+{
+    assert(str != NULL);
+
+    char *ptr = strdup(str);
+
+    if (ptr == NULL)
+    {
+        fprintf(stderr, "strdup(\"%s\") fail\n", str);
+        abort();
+    }
+
+    return ptr;
+}
+
+/*
  * Same as strdup() but formats the resulting string.
  */
 char *
