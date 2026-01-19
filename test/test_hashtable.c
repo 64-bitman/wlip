@@ -1,6 +1,7 @@
 #include "alloc.h"
 #include "hashtable.h"
 #include "unity.h"
+#include "util.h"
 #include <stddef.h>
 #include <stdlib.h>
 
@@ -35,7 +36,7 @@ test_hashtable_basic(void)
     {
         item_T *item = wlip_malloc(sizeof(item_T));
 
-        snprintf(item->key, 100, "%d", i);
+        wlip_snprintf(item->key, 100, "%d", i);
 
         item->val = i;
 
@@ -53,7 +54,7 @@ test_hashtable_basic(void)
     // Test lookup
     for (int i = 0; i < 200; i++)
     {
-        snprintf(buf, 100, "%d", i);
+        wlip_snprintf(buf, 100, "%d", i);
         hashbucket_T *b = hashtable_lookup(&table, buf, hash_get(buf));
         item_T *item = HB_GET(b, item_T, key);
 
@@ -63,7 +64,7 @@ test_hashtable_basic(void)
     // Test removing
     for (int i = 0; i < 20; i++)
     {
-        snprintf(buf, 100, "%d", i);
+        wlip_snprintf(buf, 100, "%d", i);
         char *s = hashtable_remove(&table, buf);
 
         TEST_ASSERT_EQUAL_STRING(buf, s);
@@ -95,7 +96,7 @@ test_hashtable_resize(void)
         hashtable_add(&table, b, key, hash);
     }
 
-    TEST_ASSERT_EQUAL_UINT32(65536, table.alloc_len);
+    TEST_ASSERT_EQUAL_UINT32(32768, table.alloc_len);
 
     // Remove a bunch of entries and add a bunch back again to see if table
     // shrinks.

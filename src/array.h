@@ -1,7 +1,10 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+typedef void (*array_freefunc_T)(void *item);
 
 // A simple dynamic array implementation
 typedef struct
@@ -17,7 +20,7 @@ typedef struct
 void array_init(array_T *self, uint32_t item_size, uint32_t grow_len);
 void array_clear(array_T *self);
 void array_clear_all(array_T *self);
-void array_grow(array_T *self, uint32_t n_items);
+bool array_grow(array_T *self, uint32_t n_items);
 void array_append(array_T *self, const char *fmt, ...);
 void array_appendc(array_T *self, char c);
 void array_add(array_T *self, void *data, uint32_t len);

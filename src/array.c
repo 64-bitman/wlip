@@ -9,7 +9,8 @@
 /*
  * Initialize the array struct with the given item size. "grow_len" is the
  * number of items that should be allocated for when growing the array. If more
- * items are needed than "grow_len", then "grow_len" is ignored.
+ * items are needed than "grow_len", then "grow_len" is ignored. No memory will
+ * be allocated.
  */
 void
 array_init(array_T *self, uint32_t item_size, uint32_t grow_len)
@@ -56,12 +57,15 @@ array_clear_all(array_T *self)
  * Grow the array by "n_items". If the array is already big enough, then nothing
  * is done. Otherwise the required extra number of items to grow by is
  * calculated, and the array is grown by that amount or by "grow_len" (if it is
- * bigger).
+ * bigger). Returns false if array did not grow because the size would overflow.
  */
-void
+bool
 array_grow(array_T *self, uint32_t n_items)
 {
     assert(self != NULL);
+
+    if ((uint64_t)self->len + (uint64_t)n_items > UINT32_MAX)
+        return false;
 
     if (self->len + n_items > self->alloc_len)
     {
@@ -70,16 +74,15 @@ array_grow(array_T *self, uint32_t n_items)
         uint32_t new_len = self->len + MAX(self->grow_len, extra_len);
         void *new;
 
-        if (self->data != NULL)
-            new = wlip_realloc(
-                self->data, ((size_t)new_len) * (size_t)self->item_sz
-            );
-        else
-            new = wlip_malloc((size_t)new_len * (size_t)self->item_sz);
+        if ((uint64_t)new_len * (uint64_t)self->item_sz > UINT32_MAX)
+            return false;
+
+        new = wlip_realloc(self->data, (size_t)new_len * (size_t)self->item_sz);
 
         self->alloc_len = new_len;
         self->data = new;
     }
+    return true;
 }
 
 /*

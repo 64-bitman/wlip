@@ -11,4 +11,4 @@ repos:
   rev: v19.1.5
   hooks:
   -   id: clang-format
-      exclude: 'external/.*'
+      exclude: 'src/sha256/*'

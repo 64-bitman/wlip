@@ -1,5 +1,6 @@
 #include "hashtable.h"
 #include "alloc.h"
+#include "util.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <string.h>
@@ -7,7 +8,8 @@
 #define FNV_OFFSET_BASIS 0x811c9dc5
 #define FNV_PRIME 0x01000193
 
-static const char *TOMBSTONE_MARKER = "";
+// Used as a tombstone marker by using its address.
+const char TOMBSTONE_MARKER;
 
 /*
  * Generate a hash for the given string
@@ -27,18 +29,31 @@ hash_get(const char *key)
 }
 
 /*
- * Initialize the given hash table and pre allocate memory for it
+ * Initialize the given hash table, doesn't allocate any memory yet.
  */
 void
 hashtable_init(hashtable_T *self)
 {
     assert(self != NULL);
 
-    self->buckets = wlip_calloc(HASHTABLE_INITIAL_LEN, sizeof(hashbucket_T));
+    self->buckets = NULL;
     self->len = 0;
     self->tombstones_len = 0;
-    self->alloc_len = HASHTABLE_INITIAL_LEN;
+    self->alloc_len = 0;
     self->no_resize = false;
+}
+
+static void
+hashtable_alloc(hashtable_T *self)
+{
+    assert(self != NULL);
+
+    if (self->buckets == NULL)
+    {
+        self->buckets =
+            wlip_calloc(HASHTABLE_INITIAL_LEN, sizeof(hashbucket_T));
+        self->alloc_len = HASHTABLE_INITIAL_LEN;
+    }
 }
 
 /*
@@ -101,6 +116,8 @@ hashtable_lookup(hashtable_T *self, const char *key, hash_T hash)
     assert(self != NULL);
     assert(key != NULL);
 
+    hashtable_alloc(self);
+
     uint32_t idx = hash & (self->alloc_len - 1);
     hashbucket_T *bucket = self->buckets + idx;
     hashbucket_T *first_tomb = NULL; // Used when key does not exist, use the
@@ -122,6 +139,22 @@ hashtable_lookup(hashtable_T *self, const char *key, hash_T hash)
 }
 
 /*
+ * Same as hashtable_lookup(), but calculates the hash and applies the offset to
+ * get the item pointer. May return NULL.
+ */
+void *
+hashtable_find(hashtable_T *self, const char *key, uint32_t offset)
+{
+    hash_T hash = hash_get(key);
+    hashbucket_T *b = hashtable_lookup(self, key, hash);
+
+    if (HB_ISEMPTY(b))
+        return NULL;
+
+    return b->key - offset;
+}
+
+/*
  * Resize the hash table depending on load. Returns true if resized, otherfalse
  * false.
  */
@@ -129,17 +162,17 @@ static void
 hashtable_resize(hashtable_T *self)
 {
     assert(self != NULL);
-    
+
     if (self->no_resize)
         return;
 
     uint32_t new_alloc;
 
-    // Increase size at a load of 50%, rehash when full load is 70%, and shrink
-    // when load is 20%.
-    if (self->len * 10 >= self->alloc_len * 5)
+    // Increase size at a load of 70%, rehash when full load is 90%, and shrink
+    // when load is 50%.
+    if (self->len * 10 >= self->alloc_len * 7)
         new_alloc = self->alloc_len * 2;
-    else if ((self->len + self->tombstones_len) * 10 >= self->alloc_len * 7)
+    else if ((self->len + self->tombstones_len) * 10 >= self->alloc_len * 9)
         new_alloc = self->alloc_len;
     else if (self->alloc_len > HASHTABLE_INITIAL_LEN &&
              self->len * 10 <= self->alloc_len * 2)
@@ -181,9 +214,8 @@ void
 hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash)
 {
     assert(self != NULL);
+    assert(bucket != NULL);
     assert(HB_ISEMPTY(bucket));
-    assert(key != NULL);
-    assert(*key != 0);
 
     if (bucket->key != NULL && *bucket->key == 0)
         self->tombstones_len--;
@@ -195,7 +227,26 @@ hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash)
 }
 
 /*
- * Remove a bucket from the hash table. Returns true if resized.
+ * Similar to hashtable_add(), but replaces the key in "bucket" with "key" (hash
+ * must be the same). Note that this does not free the existing item in the
+ * bucket, that must be done before.
+ */
+void
+hashtable_replace(
+    hashtable_T *self UNUSED, hashbucket_T *bucket, char *key,
+    hash_T hash UNUSED
+)
+{
+    assert(self != NULL);
+    assert(bucket != NULL);
+    assert(bucket->hash == hash);
+    assert(!HB_ISEMPTY(bucket));
+
+    bucket->key = key;
+}
+
+/*
+ * Remove a bucket from the hash table.
  */
 void
 hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket)
@@ -204,7 +255,7 @@ hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket)
     assert(bucket != NULL);
     assert(!HB_ISEMPTY(bucket));
 
-    bucket->key = (char *)TOMBSTONE_MARKER;
+    bucket->key = (char *)&TOMBSTONE_MARKER;
     self->tombstones_len++;
     self->len--;
 
@@ -243,6 +294,9 @@ void *
 hashtableiter_next(hashtableiter_T *self, uint32_t offset)
 {
     assert(self != NULL);
+
+    if (self->ht->buckets == NULL)
+        return NULL;
 
     if (self->found >= self->ht->len)
     {

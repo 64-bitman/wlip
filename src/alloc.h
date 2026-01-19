@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util.h"
 #include <stddef.h>
 
 void *wlip_malloc(size_t sz);
@@ -8,6 +9,6 @@ void wlip_free(void *ptr);
 void *wlip_realloc(void *ptr, size_t new_size);
 
 char *wlip_strdup(const char *str);
-char *wlip_strdup_printf(const char *fmt, ...);
+char *wlip_strdup_printf(const char *fmt, ...) PRINTFLIKE(1, 2);
 
 // vim: ts=4 sw=4 sts=4 et

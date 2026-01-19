@@ -1,24 +1,31 @@
 #include "clipboard.h"
 #include "alloc.h"
-#include "errors.h"
+#include "database.h"
+#include "event.h"
 #include "util.h"
+#include "wayland.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 // Table that holds all defined clipboards.
 static hashtable_T CLIPBOARDS;
 
 /*
- * Allocate a new clipboard named "name". If the name is invalid or clipboard
- * with same name already exists, then NULL is returned.
+ * Allocate a new clipboard named "name" and add it to the global table. If the
+ * name is invalid or clipboard with same name already exists, then NULL is
+ * returned.
  */
 clipboard_T *
-clipboard_new(const char *name, error_T *error)
+clipboard_new(const char *name)
 {
     assert(name != NULL);
-    assert(error != NULL);
-    assert(ERROR_ISNONE(error));
+
+    // Initialize global table if we haven't.
+    if (CLIPBOARDS.buckets == NULL)
+        hashtable_init(&CLIPBOARDS);
 
     uint32_t name_len = STRLEN(name);
     hash_T hash = hash_get(name);
@@ -27,58 +34,380 @@ clipboard_new(const char *name, error_T *error)
     // Check if clipboard already exists
     if (!HB_ISEMPTY(b))
     {
-        error_set(error, ERROR_EEXIST, "Clipboard '%s' already exists", name);
+        wlip_warn("Clipboard '%s' already exists", name);
         return NULL;
     }
 
     static const char *valid_chars =
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 
-    if (name_len >= CLIPBOARD_NAME_MAX_LEN || name_len == 0)
+    if (name_len == 0)
     {
-        error_set(
-            error, ERROR_CLIPBOARD_NAME,
-            "Clipboard name '%s' is too long or has length of zero", name
-        );
+        wlip_warn("Clipboard name has length of zero");
         return NULL;
     }
 
     for (uint32_t i = 0; i < name_len; i++)
         if (strchr(valid_chars, name[i]) == NULL)
         {
-            error_set(
-                error, ERROR_CLIPBOARD_NAME,
-                "Clipboard name '%s' has invalid char '%c'", name[i]
+            wlip_warn(
+                "Clipboard name '%s' has invalid char '%c'", name, name[i]
             );
             return NULL;
         }
 
-    clipboard_T *cb = wlip_malloc(sizeof(clipboard_T));
+    clipboard_T *cb = wlip_malloc(sizeof(clipboard_T) + name_len);
 
-    snprintf(cb->name, CLIPBOARD_NAME_MAX_LEN, "%s", name);
+    sprintf(cb->name, "%s", name);
+    cb->name_len = name_len;
 
     cb->entry = NULL;
+    cb->recv_ctx = NULL;
     cb->no_database = false;
-    array_init(&cb->selections, sizeof(uint), 2);
-
-    // Initialize global table if we haven't.
-    if (CLIPBOARDS.buckets == NULL)
-        hashtable_init(&CLIPBOARDS);
+    cb->selections_len = 0;
 
     hashtable_add(&CLIPBOARDS, b, cb->name, hash);
+
+    wlip_debug("New clipboard '%s'", name);
 
     return cb;
 }
 
+#ifdef TESTING
 void
 clipboard_free(clipboard_T *cb)
 {
     assert(cb != NULL);
 
     if (cb->entry != NULL)
-        clipentry_free(cb->entry);
-    array_clear(&cb->selections);
+        clipentry_unref(cb->entry);
+
+    for (uint32_t i = 0; i < cb->selections_len; i++)
+        wlselection_unref(cb->selections[i]);
+
+    if (cb->recv_ctx != NULL)
+    {
+        clipentry_unref(cb->recv_ctx->entry);
+        wlip_free(cb->recv_ctx);
+    }
     wlip_free(cb);
+}
+
+/*
+ * Free all clipboards in the global table.
+ */
+void
+free_clipboards(void)
+{
+    hashtable_clear_func(
+        &CLIPBOARDS, (hb_freefunc_T)clipboard_free, offsetof(clipboard_T, name)
+    );
+    memset(&CLIPBOARDS, 0, sizeof(CLIPBOARDS));
+}
+#endif
+
+/*
+ * Add the selection to the clipboard so it is synced with it. Note that this
+ * does not immediately sync the selection. Returns true if selection was added.
+ */
+bool
+clipboard_add_selection(clipboard_T *cb, wlselection_T *sel)
+{
+    assert(cb != NULL);
+    assert(sel != NULL);
+
+    if (cb->selections_len >= MAX_SELECTIONS)
+    {
+        wlip_warn(
+            "Cannot add more than %u selections per clipboard", MAX_SELECTIONS
+        );
+        return false;
+    }
+
+    cb->selections[cb->selections_len++] = wlselection_ref(sel);
+    return true;
+}
+
+/*
+ * Set the clipboard to the entry, which may be NULL to clear the clipboard.
+ */
+void
+clipboard_set(clipboard_T *cb, clipentry_T *entry)
+{
+    assert(cb != NULL);
+
+    if (cb->entry != NULL)
+        clipentry_unref(cb->entry);
+
+    cb->entry = entry;
+}
+
+/*
+ * Sync all attached selections to the clipboard. If "source" is not NULL, then
+ * it will not be synced with the clipboard.
+ */
+void
+clipboard_sync(clipboard_T *cb, wlselection_T *source)
+{
+    assert(cb != NULL);
+
+    wlip_debug("Syncing selection for clipboard '%s'", cb->name);
+
+    for (uint32_t i = 0; i < cb->selections_len; i++)
+    {
+        wlselection_T *sel = cb->selections[i];
+
+        if (sel == source)
+            continue;
+
+        if (wlselection_is_valid(sel))
+            wlselection_update(sel);
+        else
+            // Remove from array
+            cb->selections[i] = cb->selections[--cb->selections_len];
+    }
+}
+
+/*
+ * Load the entry at the index into the clipboard. Does not sync the clipboard.
+ * Returns true if an entry was loaded. Caller must ensure "idx" is >= zero.
+ */
+bool
+clipboard_load(clipboard_T *cb, int64_t idx)
+{
+    assert(cb != NULL);
+    assert(idx >= 0);
+
+    if (cb->no_database)
+        return false;
+
+    clipentry_T *entry = database_deserialize_index(idx, cb);
+
+    if (entry != NULL)
+        clipboard_set(cb, entry);
+    return entry != NULL;
+}
+
+/*
+ * Set the clipboard to the given entry and sync all selections. Takes ownership
+ * of "entry". If "entry" is NULL, then all selections are cleared. "source"
+ * should be the selection that caused a selection event, otherwise NULL.
+ */
+static void
+set_entry(clipentry_T *entry, wlselection_T *source)
+{
+    assert(entry != NULL);
+
+    clipboard_T *cb = entry->clipboard;
+
+    clipboard_set(cb, entry);
+
+    if (!cb->no_database)
+    {
+        // Add entry to database
+        if (database_serialize(entry) == FAIL)
+            wlip_warn(
+                "Failed serializing entry '%s'",
+                sha256_digest2hex(entry->id, NULL)
+            );
+    }
+
+    clipboard_sync(cb, source);
+}
+
+/*
+ * Get the next mime type to receive its contents from and return the file
+ * descriptor. Returns -1 if at the end.
+ */
+static int
+get_next_mimetype(wlselection_T *sel, uint32_t found, array_T *mime_types)
+{
+    assert(sel != NULL);
+    assert(mime_types != NULL);
+
+    for (uint32_t i = found; i < mime_types->len; i++)
+    {
+        char *mime_type = ((char **)mime_types->data)[i];
+
+        int fd = wlselection_get_fd(sel, mime_type);
+
+        if (fd == -2)
+            return -1;
+        else if (fd != -1)
+        {
+            wlip_debug("Receiving mime type '%s'", mime_type);
+            return fd;
+        }
+    }
+    return -1;
+}
+
+static bool
+receive_check_cb(int fd, int revents, void *udata)
+{
+    clipboard_receivectx_T *ctx = udata;
+
+    // Check if we have been cancelled
+    if (ctx->cancelled)
+    {
+        wlip_debug("Cancelling previous selection event");
+        goto exit;
+    }
+
+    // POLLHUP only indicates that the sender has closed their end, not that
+    // there is no data in the pipe.
+    if (revents & (POLLIN | POLLHUP))
+    {
+        char *mime_type = ((char **)ctx->mime_types.data)[ctx->n_received];
+
+        // Create clipdata_T if we haven't
+        if (ctx->data == NULL)
+            ctx->data = clipdata_new();
+        if (!array_grow(&ctx->data->content, 512))
+        {
+            // Mime type content is too large, abort the operation
+            wlip_warn(
+                "Aborting mime type receive operation, contents are too large"
+            );
+            goto exit;
+        }
+
+        ssize_t r =
+            read(fd, ctx->data->content.data + ctx->data->content.len, 512);
+
+        if (r == -1)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return false;
+        }
+        else if (r == 0)
+        {
+            // EOF received, go onto next mime type if any.
+            hash_T hash = hash_get(mime_type);
+            hashbucket_T *b =
+                hashtable_lookup(&ctx->entry->mime_types, mime_type, hash);
+
+            // We may have duplicate mime types. In this case just update the
+            // mime type.
+            if (!HB_ISEMPTY(b))
+            {
+                mimetype_T *mt = HB_GET(b, mimetype_T, name);
+                clipdata_unref(mt->data);
+                mt->data = ctx->data; // Transfer ownership
+
+                hashtable_replace(&ctx->entry->mime_types, b, mt->name, hash);
+            }
+            else
+            {
+                mimetype_T *mt = mimetype_new(mime_type, ctx->data);
+                hashtable_add(&ctx->entry->mime_types, b, mt->name, hash);
+            }
+
+            sha256_final(&ctx->sha, ctx->data->id);
+            ctx->data->state = DATA_STATE_LOADED;
+
+            ctx->n_received++;
+            ctx->data = NULL;
+            close(fd);
+
+            int next_fd =
+                get_next_mimetype(ctx->sel, ctx->n_received, &ctx->mime_types);
+
+            if (next_fd == -1 || next_fd == -2)
+            {
+                if (ctx->entry->clipboard->recv_ctx == ctx)
+                    ctx->entry->clipboard->recv_ctx = NULL;
+
+                // Finished receiving all mime types, set the entry
+                set_entry(ctx->entry, ctx->sel);
+
+                wlselection_unref(ctx->sel);
+                array_clear_all(&ctx->mime_types);
+                wlip_free(ctx);
+            }
+            else
+            {
+                sha256_init(&ctx->sha);
+                event_add_fd(next_fd, POLLIN, 0, NULL, receive_check_cb, ctx);
+            }
+            return true;
+        }
+        else
+        {
+            sha256_update(
+                &ctx->sha, ctx->data->content.data + ctx->data->content.len, r
+            );
+            ctx->data->content.len += r;
+            return false;
+        }
+    }
+    else if (revents & (POLLERR | POLLNVAL))
+        wlip_warn("Error occured while receiving mime type contents");
+    else
+        // Nothing happened
+        return false;
+
+exit:
+    if (ctx->entry->clipboard->recv_ctx == ctx)
+        ctx->entry->clipboard->recv_ctx = NULL;
+
+    wlselection_unref(ctx->sel);
+    clipentry_unref(ctx->entry);
+    array_clear_all(&ctx->mime_types);
+    if (ctx->data != NULL)
+        clipdata_unref(ctx->data);
+    wlip_free(ctx);
+    return true;
+}
+
+/*
+ * Push a selection event to the clipboard with the given mime types. Ownership
+ * of "mime_types" is taken.
+ */
+void
+clipboard_push_selection(
+    clipboard_T *cb, wlselection_T *sel, array_T mime_types
+)
+{
+    assert(cb != NULL);
+    assert(sel != NULL);
+
+    // If we are still receiving data for a previous selection, cancel it.
+    if (cb->recv_ctx != NULL)
+        cb->recv_ctx->cancelled = true;
+
+    clipentry_T *entry = clipentry_new(NULL, cb);
+
+    entry->creation_time = get_realtime_us();
+    entry->starred = false;
+
+    if (mime_types.data != NULL && mime_types.len > 0)
+    {
+        // Receive first mime type
+        int fd = get_next_mimetype(sel, 0, &mime_types);
+
+        if (fd != -1)
+        {
+            clipboard_receivectx_T *ctx =
+                wlip_calloc(1, sizeof(clipboard_receivectx_T));
+
+            ctx->entry = entry;
+            ctx->mime_types = mime_types;
+            ctx->n_received = 0;
+            ctx->sel = wlselection_ref(sel);
+            ctx->cancelled = false;
+            sha256_init(&ctx->sha);
+
+            cb->recv_ctx = ctx;
+            event_add_fd(fd, POLLIN, 0, NULL, receive_check_cb, ctx);
+            return;
+        }
+    }
+
+    // No mime types offered, still let the entry pass through, user may
+    // ignore it via scripting (TODO).
+    array_clear(&mime_types);
+    set_entry(entry, sel);
 }
 
 /*
@@ -98,11 +427,21 @@ find_clipboard(const char *name)
 }
 
 /*
+ * Return the table that contains all clipboards
+ */
+hashtable_T *
+get_clipboards(void)
+{
+    return &CLIPBOARDS;
+}
+
+/*
  * Allocate a new entry with the given ID and associate it with "cb". If "id" is
- * NULL, then the ID is automatically generated.
+ * NULL, then the ID is automatically generated. Creation time and starred must
+ * manually be set.
  */
 clipentry_T *
-clipentry_new(char id[SHA256_BLOCK_SIZE], clipboard_T *cb)
+clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb)
 {
     assert(cb != NULL);
 
@@ -115,7 +454,7 @@ clipentry_new(char id[SHA256_BLOCK_SIZE], clipboard_T *cb)
 
         // ID is just the clipboard name and the current time hashed together.
         sha256_init(&ctx);
-        sha256_update(&ctx, (char_u *)cb->name, CLIPBOARD_NAME_MAX_LEN);
+        sha256_update(&ctx, (char_u *)cb->name, cb->name_len);
         sha256_update(&ctx, (char_u *)&time, sizeof(time));
         sha256_final(&ctx, entry->id);
     }
@@ -123,6 +462,7 @@ clipentry_new(char id[SHA256_BLOCK_SIZE], clipboard_T *cb)
         memcpy(entry->id, id, SHA256_BLOCK_SIZE);
 
     entry->clipboard = cb;
+    entry->refcount = 1;
 
     hashtable_init(&entry->attributes);
     hashtable_init(&entry->mime_types);
@@ -130,23 +470,7 @@ clipentry_new(char id[SHA256_BLOCK_SIZE], clipboard_T *cb)
     return entry;
 }
 
-/*
- * Same as clipentry_new(), but looks up the clipboard_T using the given
- * clipboard name.
- */
-clipentry_T *
-clipentry_new_clipname(char id[SHA256_BLOCK_SIZE], const char *clipboard)
-{
-    assert(clipboard != NULL);
-
-    clipboard_T *cb = find_clipboard(clipboard);
-
-    if (cb == NULL)
-        return NULL;
-    return clipentry_new(id, cb);
-}
-
-void
+static void
 clipentry_free(clipentry_T *entry)
 {
     assert(entry != NULL);
@@ -155,8 +479,29 @@ clipentry_free(clipentry_T *entry)
         &entry->attributes, (hb_freefunc_T)attribute_free,
         offsetof(attribute_T, name)
     );
-    hashtable_clear_func(&entry->mime_types, NULL, offsetof(mimetype_T, name));
+    hashtable_clear_func(
+        &entry->mime_types, (hb_freefunc_T)mimetype_free,
+        offsetof(mimetype_T, name)
+    );
     wlip_free(entry);
+}
+
+clipentry_T *
+clipentry_ref(clipentry_T *entry)
+{
+    assert(entry != NULL);
+
+    entry->refcount++;
+    return entry;
+}
+
+void
+clipentry_unref(clipentry_T *entry)
+{
+    assert(entry != NULL);
+
+    if (--entry->refcount == 0)
+        clipentry_free(entry);
 }
 
 /*
@@ -185,77 +530,70 @@ attribute_free(attribute_T *attr)
 }
 
 /*
- * Allocate a new mime type. It is initially unloaded and has no ID.
+ * Allocate a new clipdata_T struct that is initially unloaded.
+ */
+clipdata_T *
+clipdata_new(void)
+{
+    clipdata_T *data = wlip_malloc(sizeof(clipdata_T));
+
+    array_init(&data->content, 1, 512);
+    data->state = DATA_STATE_UNLOADED;
+    data->refcount = 1;
+    return data;
+}
+
+static void
+clipdata_free(clipdata_T *data)
+{
+    assert(data != NULL);
+
+    array_clear(&data->content);
+    wlip_free(data);
+}
+
+clipdata_T *
+clipdata_ref(clipdata_T *data)
+{
+    assert(data != NULL);
+
+    data->refcount++;
+    return data;
+}
+
+void
+clipdata_unref(clipdata_T *data)
+{
+    assert(data != NULL);
+
+    if (--data->refcount == 0)
+        clipdata_free(data);
+}
+
+/*
+ * Allocate a new mime type with the given data. It is initially unloaded and
+ * has no ID. Does not add a new reference to "data".
  */
 mimetype_T *
-mimetype_new(const char *mime_type)
+mimetype_new(const char *mime_type, clipdata_T *data)
 {
     assert(mime_type != NULL);
+    assert(data != NULL);
 
     mimetype_T *mime = wlip_malloc(sizeof(mimetype_T) + STRLEN(mime_type));
 
-    array_init(&mime->content, 1, 512);
     sprintf(mime->name, "%s", mime_type);
-    mime->state = MIMETYPE_STATE_UNLOADED;
-    mime->refcount = 1;
+    mime->data = data;
 
     return mime;
 }
 
-static void
+void
 mimetype_free(mimetype_T *mime)
 {
     assert(mime != NULL);
 
-    array_clear(&mime->content);
+    if (mime->data != NULL)
+        clipdata_unref(mime->data);
     wlip_free(mime);
-}
-
-mimetype_T *
-mimetype_ref(mimetype_T *mime)
-{
-    assert(mime != NULL);
-
-    mime->refcount++;
-    return mime;
-}
-
-void
-mimetype_unref(mimetype_T *mime)
-{
-    assert(mime != NULL);
-
-    if (--mime->refcount == 0)
-        mimetype_free(mime);
-}
-
-/*
- * Append data to the mime type, which must be in the unloaded state.
- */
-void
-mimetype_append(mimetype_T *mime, char_u *data, uint32_t len)
-{
-    assert(mime != NULL);
-    assert(mime->state == MIMETYPE_STATE_UNLOADED);
-    assert(data != NULL);
-
-    array_add(&mime->content, data, len);
-}
-
-/*
- * Finialize the mime type, and set the state to loaded. This will also generate
- * the ID.
- */
-void
-mimetype_finalize(mimetype_T *mime)
-{
-    assert(mime != NULL);
-
-    mime->state = MIMETYPE_STATE_LOADED;
-
-    SHA256_CTX ctx;
-
-    sha256_init(&ctx);
-    sha256_update(&ctx, mime->content.data, mime->content.len);
-    sha256_final(&ctx, mime->id);
 }

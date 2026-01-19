@@ -1,13 +1,18 @@
 #include "wayland.h"
 #include "alloc.h"
 #include "clipboard.h"
+#include "event.h"
 #include "ext-data-control-v1.h"
 #include "hashtable.h"
 #include "util.h"
 #include "wlr-data-control-unstable-v1.h"
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <wayland-client.h>
 
 #define DESTROY_DEVICE(d)                                                      \
@@ -17,8 +22,10 @@
             break;                                                             \
         if (CONNECTION.protocol == DATA_PROTOCOL_EXT)                          \
             ext_data_control_device_v1_destroy(d);                             \
-        else                                                                   \
+        else if (CONNECTION.protocol == DATA_PROTOCOL_WLR)                     \
             zwlr_data_control_device_v1_destroy(d);                            \
+        else                                                                   \
+            abort();                                                           \
     } while (false)
 #define DESTROY_SOURCE(s)                                                      \
     do                                                                         \
@@ -27,8 +34,10 @@
             break;                                                             \
         if (CONNECTION.protocol == DATA_PROTOCOL_EXT)                          \
             ext_data_control_source_v1_destroy(s);                             \
-        else                                                                   \
+        else if (CONNECTION.protocol == DATA_PROTOCOL_WLR)                     \
             zwlr_data_control_source_v1_destroy(s);                            \
+        else                                                                   \
+            abort();                                                           \
     } while (false)
 #define DESTROY_OFFER(o)                                                       \
     do                                                                         \
@@ -37,14 +46,62 @@
             break;                                                             \
         if (CONNECTION.protocol == DATA_PROTOCOL_EXT)                          \
             ext_data_control_offer_v1_destroy(o);                              \
-        else                                                                   \
+        else if (CONNECTION.protocol == DATA_PROTOCOL_WLR)                     \
             zwlr_data_control_offer_v1_destroy(o);                             \
+        else                                                                   \
+            abort();                                                           \
+    } while (false)
+#define OFFER_RECEIVE(o, m, f)                                                 \
+    do                                                                         \
+    {                                                                          \
+        if (CONNECTION.protocol == DATA_PROTOCOL_EXT)                          \
+            ext_data_control_offer_v1_receive(o, m, f);                        \
+        else if (CONNECTION.protocol == DATA_PROTOCOL_WLR)                     \
+            zwlr_data_control_offer_v1_receive(o, m, f);                       \
+        else                                                                   \
+            abort();                                                           \
+    } while (false)
+#define SOURCE_OFFER(s, m)                                                     \
+    do                                                                         \
+    {                                                                          \
+        if (CONNECTION.protocol == DATA_PROTOCOL_EXT)                          \
+            ext_data_control_source_v1_offer(s, m);                            \
+        else if (CONNECTION.protocol == DATA_PROTOCOL_WLR)                     \
+            zwlr_data_control_source_v1_offer(s, m);                           \
+        else                                                                   \
+            abort();                                                           \
+    } while (false)
+#define DEVICE_SET(d, s, t)                                                    \
+    do                                                                         \
+    {                                                                          \
+        if ((t) == WLSELECTION_TYPE_REGULAR)                                   \
+        {                                                                      \
+            if (CONNECTION.protocol == DATA_PROTOCOL_EXT)                      \
+                ext_data_control_device_v1_set_selection(d, s);                \
+            else if (CONNECTION.protocol == DATA_PROTOCOL_WLR)                 \
+                zwlr_data_control_device_v1_set_selection(d, s);               \
+            else                                                               \
+                abort();                                                       \
+        }                                                                      \
+        else if ((t) == WLSELECTION_TYPE_PRIMARY)                              \
+        {                                                                      \
+            if (CONNECTION.protocol == DATA_PROTOCOL_EXT)                      \
+                ext_data_control_device_v1_set_primary_selection(d, s);        \
+            else if (CONNECTION.protocol == DATA_PROTOCOL_WLR)                 \
+                zwlr_data_control_device_v1_set_primary_selection(d, s);       \
+            else                                                               \
+                abort();                                                       \
+        }                                                                      \
+        else                                                                   \
+            abort();                                                           \
     } while (false)
 
-typedef struct
+typedef struct wlselection_S
 {
-    // Unique identifier for selection.
-    int id;
+    bool available;
+
+    wlseat_T *seat; // Parent seat
+    wlselection_type_T type;
 
     // Current data source, NULL if not the source client.
     union
@@ -62,20 +119,28 @@ typedef struct
         void *dummy;
     } offer;
 
+    // Copied from wlseat_T "mime_types".
+    hashtable_T mime_types;
+
+    bool ignore_next_null; // If next selection event should be ignored (if it
+                           // is NULL).
+
     // Clipboard that this selection is attached to. May be NULL.
     clipboard_T *clipboard;
 } wlselection_T;
 
 typedef struct wlseat_S
 {
+    int refcount;
+
     struct wl_seat *proxy;
 
     uint32_t capabilities;
     uint32_t numerical_name;
 
+    // May be false if seat was removed, but is still referenced somewhere.
     bool started;
 
-    // May be NULL in case finished event is received.
     union
     {
         struct ext_data_control_device_v1 *ext;
@@ -83,8 +148,8 @@ typedef struct wlseat_S
         void *dummy;
     } device;
 
-    // Table of mime types for the current data offer event if any
-    hashtable_T mime_types;
+    // Array of mime types for the current data offer event if any.
+    array_T mime_types;
 
     wlselection_T regular;
     wlselection_T primary;
@@ -97,7 +162,6 @@ typedef enum
     DATA_PROTOCOL_NONE,
     DATA_PROTOCOL_EXT,
     DATA_PROTOCOL_WLR,
-    DATA_PROTOCOL_WLR1, // Does not support primary selection
 } dataprotocol_T;
 
 // Global singleton state for display connection
@@ -117,6 +181,8 @@ static struct
             struct zwlr_data_control_manager_v1 *wlr;
         } dac;
     } globals;
+
+    bool reading; // If we have called wl_display_prepare_read().
 
     dataprotocol_T protocol;
 } CONNECTION;
@@ -259,7 +325,6 @@ wlseat_new(struct wl_seat *proxy, uint32_t name)
 
     seat->proxy = proxy;
     seat->numerical_name = name;
-    hashtable_init(&seat->mime_types);
 
     wlip_debug("New seat '%s'", seat->name);
 
@@ -270,9 +335,11 @@ wlseat_new(struct wl_seat *proxy, uint32_t name)
     assert(HB_ISEMPTY(b));
     hashtable_add(&CONNECTION.globals.seats, b, seat->name, hash);
 
-    static int id;
-    seat->regular.id = ++id;
-    seat->primary.id = ++id;
+    seat->regular.seat = seat;
+    seat->primary.seat = seat;
+    seat->regular.type = WLSELECTION_TYPE_REGULAR;
+    seat->primary.type = WLSELECTION_TYPE_PRIMARY;
+    seat->refcount = 1;
 }
 
 /*
@@ -306,11 +373,18 @@ wlseat_start(wlseat_T *seat)
             seat->device.wlr, &wlr_device_listener, seat
         );
     }
+
+    seat->regular.available = true;
+
+    if (CONNECTION.protocol == DATA_PROTOCOL_EXT ||
+        (CONNECTION.protocol == DATA_PROTOCOL_WLR &&
+         zwlr_data_control_manager_v1_get_version(CONNECTION.globals.dac.wlr) >=
+             2))
+        seat->primary.available = true;
 }
 
 /*
- * Get the wlseat_T with the given name and start it (start listening for
- * events). Return NULL if seat doesn't exist.
+ * Get the wlseat_T with the given name. Return NULL if it doesn't exist.
  */
 wlseat_T *
 wayland_get_seat(const char *name)
@@ -329,10 +403,9 @@ wayland_get_seat(const char *name)
 }
 
 /*
- * Attach the selection from the seat to the given clipboard. Additionally also
- * start the seat as well if it isn't (start listening for events)
- *
- * TODO: support updating the clipboard?
+ * Attach the selection from the seat to the given clipboard, if the selection
+ * type is supported. Additionally also start the seat as well if it isn't
+ * (start listening for events).
  */
 void
 wayland_attach_selection(
@@ -342,9 +415,15 @@ wayland_attach_selection(
     assert(seat != NULL);
 
     wlselection_T *sel = wlselection_get(seat, type);
-    sel->clipboard = cb;
 
-    wlseat_start(seat);
+    if (clipboard_add_selection(cb, sel))
+    {
+        wlseat_start(seat);
+        if (!sel->available)
+            return;
+
+        sel->clipboard = cb;
+    }
 }
 
 static void
@@ -366,8 +445,98 @@ wlseat_destroy(wlseat_T *seat)
     else
         wl_seat_destroy(seat->proxy);
 
-    hashtable_clear(&seat->mime_types);
+    array_clear_all(&seat->mime_types);
     wlip_free(seat);
+}
+
+static wlseat_T *
+wlseat_ref(wlseat_T *seat)
+{
+    assert(seat != NULL);
+    seat->refcount++;
+    return seat;
+}
+
+static void
+wlseat_unref(wlseat_T *seat)
+{
+    assert(seat != NULL);
+
+    if (--seat->refcount <= 0)
+        wlseat_destroy(seat);
+}
+
+wlselection_T *
+wlselection_ref(wlselection_T *sel)
+{
+    assert(sel != NULL);
+
+    wlseat_ref(sel->seat);
+    return sel;
+}
+
+void
+wlselection_unref(wlselection_T *sel)
+{
+    assert(sel != NULL);
+    wlseat_unref(sel->seat);
+}
+
+static void
+wlseat_mark_invalid(wlseat_T *seat)
+{
+    assert(seat != NULL);
+
+    seat->started = false;
+    wlseat_unref(seat);
+}
+
+static bool
+prepare_cb(int fd UNUSED, void *udata UNUSED)
+{
+    if (!CONNECTION.reading)
+    {
+        // Dispatch any pending events left in the queue
+        while (wl_display_prepare_read(CONNECTION.display) == -1)
+            wl_display_dispatch_pending(CONNECTION.display);
+        CONNECTION.reading = true;
+    }
+
+    // Flush requests to commpositor
+    if (wl_display_flush(CONNECTION.display) == -1 && errno != EAGAIN)
+    {
+        // Wayland connection lost, exit.
+        wlip_debug("Wayland display connection lost, exiting...");
+        exit(EXIT_SUCCESS);
+    }
+
+    return false;
+}
+
+static bool
+check_cb(int fd UNUSED, int revents, void *udata UNUSED)
+{
+    CONNECTION.reading = false;
+    if (revents & POLLIN)
+    {
+        if (wl_display_read_events(CONNECTION.display) == -1 ||
+            wl_display_dispatch_pending(CONNECTION.display) == -1)
+        {
+            // Wayland connection lost, exit.
+            wlip_debug("Wayland display connection lost, exiting...");
+            exit(EXIT_SUCCESS);
+        }
+    }
+    else if (revents & (POLLERR | POLLHUP | POLLNVAL))
+    {
+        // Wayland connection lost, exit.
+        wlip_debug("Wayland display connection lost, exiting...");
+        exit(EXIT_SUCCESS);
+    }
+    else
+        wl_display_cancel_read(CONNECTION.display);
+
+    return false;
 }
 
 /*
@@ -376,7 +545,7 @@ wlseat_destroy(wlseat_T *seat)
  * on success and FAIL on failure.
  */
 int
-wayland_init(const char *display, error_T *error)
+wayland_init(const char *display)
 {
     assert(CONNECTION.display == NULL);
 
@@ -385,9 +554,7 @@ wayland_init(const char *display, error_T *error)
     CONNECTION.display = wl_display_connect(display);
     if (CONNECTION.display == NULL)
     {
-        error_set(
-            error, ERROR_CONNECT, "Failed connecting to display '%s'", name
-        );
+        wlip_log("Failed connecting to display '%s'", name);
         return FAIL;
     }
 
@@ -404,26 +571,14 @@ wayland_init(const char *display, error_T *error)
     wl_registry_add_listener(CONNECTION.registry, &registry_listener, NULL);
     wl_display_roundtrip(CONNECTION.display);
 
+    // Add display to event loop (make sure it has the highest priority so it is
+    // always called first).
+    event_add_fd(
+        wl_display_get_fd(CONNECTION.display), POLLIN, INT_MIN, prepare_cb,
+        check_cb, NULL
+    );
+
     return OK;
-}
-
-/*
- * Get the Wayland display file descriptor. Returns -1 if not connected.
- */
-int
-wayland_get_fd(void)
-{
-    return CONNECTION.display == NULL ? -1
-                                      : wl_display_get_fd(CONNECTION.display);
-}
-
-/*
- * Get the Wayland display proxy. Returns NULL if not connected.
- */
-struct wl_display *
-wayland_get_display(void)
-{
-    return CONNECTION.display;
 }
 
 void
@@ -438,7 +593,7 @@ wayland_uninit(void)
         zwlr_data_control_manager_v1_destroy(CONNECTION.globals.dac.wlr);
 
     hashtable_clear_func(
-        &CONNECTION.globals.seats, (hb_freefunc_T)wlseat_destroy,
+        &CONNECTION.globals.seats, (hb_freefunc_T)wlseat_mark_invalid,
         offsetof(wlseat_T, name)
     );
 
@@ -476,8 +631,7 @@ registry_listener_event_global(
             registry, name, &zwlr_data_control_manager_v1_interface,
             version > 2 ? 2 : version
         );
-        CONNECTION.protocol =
-            version >= 2 ? DATA_PROTOCOL_WLR : DATA_PROTOCOL_WLR1;
+        CONNECTION.protocol = DATA_PROTOCOL_WLR;
 
         wlip_debug("Using wlr data control version %u", version);
     }
@@ -502,7 +656,6 @@ registry_listener_event_global_remove(
 {
     // Only handle if the global removed is a seat. For other globals just let
     // them be (the compositor will ignore any requests from them anyways).
-
     hashtableiter_T iter = HASHTABLEITER_INIT(&CONNECTION.globals.seats);
     wlseat_T *seat;
 
@@ -510,9 +663,267 @@ registry_listener_event_global_remove(
         if (seat->numerical_name == name)
         {
             hashtableiter_remove(&iter);
-            wlseat_destroy(seat);
+            wlseat_mark_invalid(seat);
             return;
         }
+}
+
+typedef struct
+{
+    clipdata_T *data;
+    uint32_t w; // Number of bytes written so far
+} sendctx_T;
+
+static bool
+send_check_cb(int fd, int revents, void *udata)
+{
+    sendctx_T *ctx = udata;
+
+    if (revents & POLLOUT)
+    {
+        char_u *buf = ctx->data->content.data + ctx->w;
+
+        ssize_t w = write(fd, buf, ctx->data->content.len - ctx->w);
+
+        if (w == -1)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return false;
+            wlip_log("Failed writing mime type contents: %s", strerror(errno));
+        }
+        else
+        {
+            ctx->w += w;
+            if (ctx->w < ctx->data->content.len)
+                return false;
+        }
+    }
+    else if (revents == 0)
+        return false;
+    else
+        wlip_log("Error occured while sending mime type contents");
+
+    // Error occured or finished sending all data
+    clipdata_unref(ctx->data);
+    wlip_free(ctx);
+    close(fd);
+    return true;
+}
+
+/*
+ * Common handler for data source "send" event.
+ */
+static void
+source_listener_event_send(wlselection_T *sel, const char *mime_type, int fd)
+{
+    assert(sel->clipboard != NULL);
+
+    if (sel->clipboard->entry != NULL)
+    {
+        // Find mimetype_T (if it exists) and transfer its contents
+        mimetype_T *mt = hashtable_find(
+            &sel->clipboard->entry->mime_types, mime_type,
+            offsetof(mimetype_T, name)
+        );
+
+        if (mt != NULL)
+        {
+            sendctx_T *ctx = wlip_malloc(sizeof(sendctx_T));
+
+            ctx->data = clipdata_ref(mt->data);
+            ctx->w = 0;
+
+            // Make fd non-blocking
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+            event_add_fd(fd, POLLOUT, 0, NULL, send_check_cb, ctx);
+            return;
+        }
+    }
+    close(fd);
+}
+static void
+ext_source_listener_event_send(
+    void *data, struct ext_data_control_source_v1 *source UNUSED,
+    const char *mime_type, int32_t fd
+)
+{
+    source_listener_event_send(data, mime_type, fd);
+}
+static void
+wlr_source_listener_event_send(
+    void *data, struct zwlr_data_control_source_v1 *source UNUSED,
+    const char *mime_type, int32_t fd
+)
+{
+    source_listener_event_send(data, mime_type, fd);
+}
+
+static void
+ext_source_listener_event_cancelled(
+    void *data, struct ext_data_control_source_v1 *source
+)
+{
+    wlselection_T *sel = data;
+
+    // Only set it to NULL if it is the same, because if we set the selection,
+    // we will receive the cancelled event, and we don't want to discard the
+    // source we just set by setting it to NULL.
+    ext_data_control_source_v1_destroy(source);
+    if (sel->source.dummy == source)
+        sel->source.dummy = NULL;
+}
+static void
+wlr_source_listener_event_cancelled(
+    void *data, struct zwlr_data_control_source_v1 *source
+)
+{
+    wlselection_T *sel = data;
+
+    zwlr_data_control_source_v1_destroy(source);
+    if (sel->source.dummy == source)
+        sel->source.dummy = NULL;
+}
+
+static const struct ext_data_control_source_v1_listener ext_source_listener = {
+    .send = ext_source_listener_event_send,
+    .cancelled = ext_source_listener_event_cancelled
+};
+static const struct zwlr_data_control_source_v1_listener wlr_source_listener = {
+    .send = wlr_source_listener_event_send,
+    .cancelled = wlr_source_listener_event_cancelled
+};
+
+/*
+ * Make the selection become the source client using the current clipboard entry
+ * (own the Wayland selection it corresponds to). If the entry is NULL, then the
+ * selection is cleared.
+ */
+static void
+wlselection_set(wlselection_T *sel)
+{
+    assert(sel != NULL);
+    assert(sel->clipboard != NULL);
+
+    wlip_debug(
+        "Setting %s selection for seat '%s'", wlselection_str(sel->type),
+        sel->seat->name
+    );
+
+    if (sel->source.dummy != NULL)
+    {
+        // This will cause a NULL selection event, which we want to ignore.
+        // Therefore signal that if the next selection event is a NULL one,
+        // ignore it.
+        DESTROY_SOURCE(sel->source.dummy);
+        sel->ignore_next_null = true;
+    }
+
+    clipentry_T *entry = sel->clipboard->entry;
+
+    if (entry != NULL)
+    {
+        hashtableiter_T iter = HASHTABLEITER_INIT(&entry->mime_types);
+        mimetype_T *mime_type;
+
+        // Create data source and start listening to it
+        if (CONNECTION.protocol == DATA_PROTOCOL_EXT)
+        {
+            sel->source.ext = ext_data_control_manager_v1_create_data_source(
+                CONNECTION.globals.dac.ext
+            );
+            ext_data_control_source_v1_add_listener(
+                sel->source.ext, &ext_source_listener, sel
+            );
+        }
+        else
+        {
+            sel->source.wlr = zwlr_data_control_manager_v1_create_data_source(
+                CONNECTION.globals.dac.wlr
+            );
+            zwlr_data_control_source_v1_add_listener(
+                sel->source.wlr, &wlr_source_listener, sel
+            );
+        }
+
+        while (
+            (mime_type = hashtableiter_next(&iter, offsetof(mimetype_T, name)))
+        )
+            SOURCE_OFFER(sel->source.dummy, mime_type->name);
+    }
+    else
+        sel->source.dummy = NULL;
+
+    DEVICE_SET(sel->seat->device.dummy, sel->source.dummy, sel->type);
+
+    wl_display_flush(CONNECTION.display);
+}
+
+/*
+ * Make the wlselection_T set the selection to the current clipboard entry. If
+ * the entry is NULL, then the selection is cleared.
+ */
+void
+wlselection_update(wlselection_T *sel)
+{
+    assert(sel != NULL);
+    assert(sel->clipboard != NULL);
+
+    wlselection_set(sel);
+}
+
+/*
+ * Return a file descriptor to read the contents of the given mime type from.
+ * Returns -1 on error and -2 on fatal error.
+ */
+int
+wlselection_get_fd(wlselection_T *sel, const char *mime_type)
+{
+    assert(sel != NULL);
+    assert(mime_type != NULL);
+
+    int fds[2];
+
+    if (pipe(fds) == -1)
+    {
+        wlip_log("Failed opening pipe: %s", strerror(errno));
+        return -1;
+    }
+
+    // Note that a new selection event may come in and change the offer, meaning
+    // sel->offer can be NULL.
+    if (sel->offer.dummy == NULL)
+    {
+        wlip_debug("Cannot get file descriptor, selection cleared");
+        return -2;
+    }
+
+    OFFER_RECEIVE(sel->offer.dummy, mime_type, fds[1]);
+
+    // Close our write-end because we don't need it
+    close(fds[1]);
+
+    if (wl_display_flush(CONNECTION.display) == -1)
+    {
+        wlip_log("Failed flushing display: %s", strerror(errno));
+        close(fds[0]);
+        return -1;
+    }
+
+    // Make fd non blocking
+    fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+
+    return fds[0];
+}
+
+/*
+ * Return true if the selection is still valid/available.
+ */
+bool
+wlselection_is_valid(wlselection_T *sel)
+{
+    assert(sel != NULL);
+
+    return sel->seat->started;
 }
 
 /*
@@ -524,14 +935,9 @@ offer_listener_event_offer(wlseat_T *seat, const char *mime_type)
     assert(seat != NULL);
     assert(mime_type != NULL);
 
-    hash_T hash = hash_get(mime_type);
-    hashbucket_T *b = hashtable_lookup(&seat->mime_types, mime_type, hash);
-
-    if (!HB_ISEMPTY(b))
-        // Shouldn't happen?
-        return;
-
-    hashtable_add(&seat->mime_types, b, wlip_strdup(mime_type), hash);
+    array_grow(&seat->mime_types, 1);
+    ((char **)seat->mime_types.data)[seat->mime_types.len++] =
+        wlip_strdup(mime_type);
 }
 static void
 ext_offer_listener_event_offer(
@@ -558,11 +964,21 @@ static const struct zwlr_data_control_offer_v1_listener wlr_offer_listener = {
 };
 
 static void
+device_listener_event_data_offer(wlseat_T *seat)
+{
+    // Remove any previous mime types
+    if (seat->mime_types.data != NULL)
+        array_clear_all(&seat->mime_types);
+    array_init(&seat->mime_types, sizeof(char *), 5);
+}
+
+static void
 ext_device_listener_event_data_offer(
     void *data, struct ext_data_control_device_v1 *device UNUSED,
     struct ext_data_control_offer_v1 *offer
 )
 {
+    device_listener_event_data_offer(data);
     ext_data_control_offer_v1_add_listener(offer, &ext_offer_listener, data);
 }
 static void
@@ -571,7 +987,25 @@ wlr_device_listener_event_data_offer(
     struct zwlr_data_control_offer_v1 *offer
 )
 {
+    device_listener_event_data_offer(data);
     zwlr_data_control_offer_v1_add_listener(offer, &wlr_offer_listener, data);
+}
+
+static bool
+null_delay_cb(void *udata)
+{
+    wlselection_T *sel = udata;
+
+    if (sel->offer.dummy == NULL)
+    {
+        wlip_debug("NULL selection event is valid, setting the selection");
+        wlselection_set(sel);
+    }
+    else
+        wlip_debug("NULL selection event is invalid");
+
+    wlseat_unref(sel->seat);
+    return true;
 }
 
 /*
@@ -585,19 +1019,32 @@ device_listener_event_xselection(
     assert(seat != NULL);
 
     const char *sel_str = wlselection_str(type);
-
-    wlip_debug("Received %s selection for seat '%s'", sel_str, seat->name);
-
     wlselection_T *sel = wlselection_get(seat, type);
 
     // Destroy previous data offer if any
     DESTROY_OFFER(sel->offer.dummy);
 
-    if (sel->source.dummy != NULL)
+    if (sel->ignore_next_null)
     {
-        // We are the source client, ignore selection event.
+        sel->ignore_next_null = false;
+
+        if (offer == NULL)
+        {
+            wlip_debug("Ignoring this NULL selection event");
+            return;
+        }
+    }
+
+    wlip_debug("Received %s selection for seat '%s'", sel_str, seat->name);
+
+    if (sel->clipboard == NULL || sel->source.dummy != NULL)
+    {
+        // We are the source client or are not attached to a clipboard, ignore
+        // selection event.
         DESTROY_OFFER(offer);
         sel->offer.dummy = NULL;
+
+        wlip_debug("Source client is self, ignoring");
         return;
     }
 
@@ -607,10 +1054,27 @@ device_listener_event_xselection(
     // current clipboard entry is not NULL).
     if (offer == NULL)
     {
-        assert(sel->clipboard != NULL);
-
         if (sel->clipboard->entry == NULL)
+            // No entry that we can set the selection to in the first place, so
+            // ignore.
             return;
+
+        // We want to delay setting the selection because the NULL selection
+        // event may followed right after by the actual selection event. We
+        // want to ignore the NULL selection event if so.
+        wlip_debug("Got NULL selection event, delaying setting the selection");
+
+        // Must add reference since seat may become invalid during the wait.
+        wlseat_ref(seat);
+        event_add_timer(1, null_delay_cb, sel);
+    }
+    else
+    {
+        array_T mime_types = sel->seat->mime_types;
+
+        memset(&sel->seat->mime_types, 0, sizeof(array_T));
+        // Push selection to clipboard
+        clipboard_push_selection(sel->clipboard, sel, mime_types);
     }
 }
 static void
@@ -653,12 +1117,13 @@ wlr_device_listener_event_primary_selection(
 static void
 device_listener_event_finished(wlseat_T *seat)
 {
-    DESTROY_DEVICE(seat->device.dummy);
-    seat->device.dummy = NULL;
-
     wlip_debug(
         "Received data device 'finished' event for seat '%s'", seat->name
     );
+
+    // Remove seat from global table
+    hashtable_remove(&CONNECTION.globals.seats, seat->name);
+    wlseat_mark_invalid(seat);
 }
 static void
 ext_device_listener_event_finished(

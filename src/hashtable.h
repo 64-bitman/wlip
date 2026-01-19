@@ -17,7 +17,9 @@ typedef struct
 typedef void (*hb_freefunc_T)(void *);
 
 // Check if bucket is empty (is able to be used)
-#define HB_ISEMPTY(hb) ((hb)->key == NULL || *((hb)->key) == 0)
+#define HB_ISEMPTY(hb) ((hb)->key == NULL || (hb)->key == &TOMBSTONE_MARKER)
+
+extern const char TOMBSTONE_MARKER;
 
 // Get the item struct from a bucket or key from bucket
 #define HBKEY_GET(key, s, keyname) ((s *)((key) - offsetof(s, keyname)))
@@ -28,7 +30,7 @@ typedef void (*hb_freefunc_T)(void *);
 typedef struct
 {
     hashbucket_T *buckets;
-    uint32_t len;            // Number of used items
+    uint32_t len;            // Number of used items (not including tombstones).
     uint32_t tombstones_len; // Number of tombstones
     uint32_t alloc_len;      // Allocated length, always a power of 2
     bool no_resize;          // Don't resize when removing, adding.
@@ -42,7 +44,7 @@ typedef struct
     uint32_t i;     // Current index
 } hashtableiter_T;
 
-#define HASHTABLE_INITIAL_LEN 16
+#define HASHTABLE_INITIAL_LEN 8
 
 #define HASHTABLEITER_INIT(ht) {ht, 0, 0}
 
@@ -55,8 +57,12 @@ void
 hashtable_clear_func(hashtable_T *self, hb_freefunc_T func, uint32_t offset);
 
 hashbucket_T *hashtable_lookup(hashtable_T *self, const char *key, hash_T hash);
+void *hashtable_find(hashtable_T *self, const char *key, uint32_t offset);
 void
 hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash);
+void hashtable_replace(
+    hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash
+);
 void hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket);
 char *hashtable_remove(hashtable_T *self, const char *key);
 

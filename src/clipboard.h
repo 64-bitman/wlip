@@ -1,33 +1,32 @@
 #pragma once
 
 #include "array.h"
-#include "errors.h"
 #include "hashtable.h"
 #include "sha256.h"
 #include "util.h"
-
-#define CLIPBOARD_NAME_MAX_LEN 256
+#include "wayland.h"
 
 typedef enum
 {
-    MIMETYPE_STATE_UNLOADED, // Mime data is unloaded (contents not stored in
-                             // memory).
-    MIMETYPE_STATE_LOADED,   // Mime data is loaded (contents loaded in memory)
-    MIMETYPE_STATE_REMOVED,  // Mime data has been removed. This is so we know
-                             // we should remove this mime type from the
-                             // database.
-} mimetype_state_T;
+    DATA_STATE_UNLOADED, // Data is unloaded (contents not stored in
+                         // memory).
+    DATA_STATE_LOADED,   // Data is loaded (contents loaded in memory)
+} data_state_T;
 
-// Holds the content of a mime type with a reference count. Each mime data has
-// an ID like clipentry_T, however it is the hash of its contents. This is to
-// prevent duplication of data, as mime datas with the same ID are simply
-// combined together.
+// Reference counted storage class for a block of memory. "id" is the SHA-256
+// hash of the contents.
 typedef struct
 {
-    uint refcount;
+    int refcount;
     char_u id[SHA256_BLOCK_SIZE];
-    mimetype_state_T state;
     array_T content;
+    data_state_T state;
+} clipdata_T;
+
+// Holds the information for a mime type.
+typedef struct
+{
+    clipdata_T *data; // May be NULL if mimetype is removed
 
     char name[1]; // Actually longer (holds the mime type name).
 } mimetype_T;
@@ -35,7 +34,6 @@ typedef struct
 typedef enum
 {
     ATTRIBUTE_TYPE_REMOVED,
-    ATTRIBUTE_TYPE_BOOLEAN,
     ATTRIBUTE_TYPE_INTEGER,
     ATTRIBUTE_TYPE_FLOAT,
     ATTRIBUTE_TYPE_STRING,
@@ -48,12 +46,13 @@ typedef struct
 {
     union
     {
-        bool boolean;
         int64_t integer;
         double real;
         char *str; // Must be freed
         const char *sstr;
     } val;
+    // If type is changed to ATTRIBUTE_TYPE_REMOVED, then the allocated string
+    // must be freed as well.
     attribute_type_T type;
     char name[1]; // Actually longer (holds the name of the attribute).
 } attribute_T;
@@ -64,7 +63,13 @@ typedef struct clipboard_S clipboard_T;
 // contain attributes and have mime types.
 typedef struct
 {
+    int refcount;
+
     char_u id[SHA256_BLOCK_SIZE];
+
+    int64_t creation_time; // In microseconds
+    bool starred;          // If true, then entry will not be automatically
+                           // removed from database.
 
     hashtable_T attributes;
     hashtable_T mime_types;
@@ -76,41 +81,75 @@ typedef struct
 
 #define ID_ISEQUAL(a, b) (memcmp((a), (b), SHA256_BLOCK_SIZE) == 0)
 
+// Internal context used when receiving mime types;
+typedef struct
+{
+    uint32_t n_received;
+    array_T mime_types;
+    clipentry_T *entry;
+    clipdata_T *data;
+    wlselection_T *sel;
+    SHA256_CTX sha;
+    bool cancelled;
+} clipboard_receivectx_T;
+
+// Max selections that can be synced per clipboard
+#define MAX_SELECTIONS 8
+
 // Holds the state for a clipboard. New selections are pushed into the
 // clipboard, which are then propogated to the other selections.
 struct clipboard_S
 {
-    // May only contain alphanumeric characters and underscore.
-    char name[CLIPBOARD_NAME_MAX_LEN];
-
     // The current entry that all selections are synced to. May be NULL if
     // clipboard is cleared.
     clipentry_T *entry;
 
+    // Current receive context, NULL if there are none going on.
+    clipboard_receivectx_T *recv_ctx;
+
     // If clipboard is not backed by a database. In this case, entries are not
     // saved persistently, and a clipboard can only have one entry at a time in
-    // its "history".
+    // its "history" (max_entries is ignored).
     bool no_database;
 
-    // Array of Wayland selections that are synced to this clipboard. Each item
-    // is a unique integer which identifies the selection.
-    array_T selections;
+    // Maximum number of entries that may be stored in clipboard history. Must
+    // be greater than zero.
+    int64_t max_entries;
+
+    // Array of Wayland selections that are synced to this clipboard.
+    wlselection_T *selections[MAX_SELECTIONS];
+    uint32_t selections_len;
+
+    uint32_t name_len;
+    // May only contain alphanumeric characters and underscore.
+    char name[1]; // Actually longer (clipboard name)
 };
 
-clipboard_T *clipboard_new(const char *name, error_T *error);
+clipboard_T *clipboard_new(const char *name);
+#ifdef TESTING
 void clipboard_free(clipboard_T *cb);
+void free_clipboards(void);
+#endif
+bool clipboard_add_selection(clipboard_T *cb, wlselection_T *sel);
+void clipboard_set(clipboard_T *cb, clipentry_T *entry);
+void clipboard_sync(clipboard_T *cb, wlselection_T *source);
+bool clipboard_load(clipboard_T *cb, int64_t idx);
+void clipboard_push_selection(
+    clipboard_T *cb, wlselection_T *sel, array_T mime_types
+);
 clipboard_T *find_clipboard(const char *name);
+hashtable_T *get_clipboards(void);
 
-clipentry_T *clipentry_new(char id[SHA256_BLOCK_SIZE], clipboard_T *cb);
-clipentry_T *
-clipentry_new_clipname(char id[SHA256_BLOCK_SIZE], const char *clipboard);
-void clipentry_free(clipentry_T *entry);
+clipentry_T *clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb);
+clipentry_T *clipentry_ref(clipentry_T *entry);
+void clipentry_unref(clipentry_T *entry);
 
 attribute_T *attribute_new(const char *name, attribute_type_T type);
 void attribute_free(attribute_T *attr);
 
-mimetype_T *mimetype_new(const char *mime_type);
-mimetype_T *mimetype_ref(mimetype_T *mime);
-void mimetype_unref(mimetype_T *mime);
-void mimetype_append(mimetype_T *mime, char_u *data, uint32_t len);
-void mimetype_finalize(mimetype_T *mime);
+clipdata_T *clipdata_new(void);
+clipdata_T *clipdata_ref(clipdata_T *data);
+void clipdata_unref(clipdata_T *data);
+
+mimetype_T *mimetype_new(const char *mime_type, clipdata_T *data);
+void mimetype_free(mimetype_T *mime);

@@ -9,7 +9,7 @@
 #include <string.h>
 
 /*
- * Same as malloc() but aborts on failure
+ * Same as malloc(), but aborts on failure
  */
 void *
 wlip_malloc(size_t sz)

@@ -1,8 +1,10 @@
 #pragma once
 
 #include "sha256.h"
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>  // IWYU pragma: keep
 #include <string.h> // IWYU pragma: keep
 
 typedef unsigned int uint;
@@ -20,7 +22,17 @@ typedef unsigned char char_u;
 #define STRINGIFY_DIRECT(x) #x
 #define STRINGIFY(x) STRINGIFY_DIRECT(x)
 
-#define ARRAY_SIZE(arr) ((uint)(sizeof(arr) / sizeof(*arr)))
+#define ARRAY_SIZE(arr) ((int)(sizeof(arr) / sizeof(*arr)))
+
+#define wlip_snprintf(b, s, f, ...)                                            \
+    do                                                                         \
+    {                                                                          \
+        if (snprintf(b, s, f, ##__VA_ARGS__) < 0)                              \
+        {                                                                      \
+            wlip_log("snprintf(...) failed: %s", strerror(errno));             \
+            abort();                                                           \
+        }                                                                      \
+    } while (false)
 
 #define STRLEN(s) ((uint32_t)strlen(s))
 
@@ -46,22 +58,37 @@ typedef unsigned char char_u;
 
 #ifdef __GNUC__
 #    define UNUSED __attribute__((__unused__))
+#    define PRINTFLIKE(n, m) __attribute__((format(printf, n, m)))
 #else
 #    define UNUSED
+#    define PRINTFLIKE(n, m)
 #endif
 
+#define OK 0
+#define FAIL -1
+
 #define wlip_log(fmt, ...)                                                     \
-    wlip_log_raw(false, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+    wlip_log_raw(false, "", __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 #define wlip_debug(fmt, ...)                                                   \
-    wlip_log_raw(true, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+    wlip_log_raw(true, "DEBUG ", __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define wlip_warn(fmt, ...)                                                    \
+    wlip_log_raw(false, "WARN ", __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define wlip_error(fmt, ...)                                                   \
+    wlip_log_raw(false, "ERROR ", __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 
 void wlip_set_debug(bool state);
-void
-wlip_log_raw(bool debug, const char *file, int lnum, const char *format, ...);
+void wlip_log_raw(
+    bool debug, const char *prefix, const char *file, int lnum,
+    const char *format, ...
+) PRINTFLIKE(5, 6);
 
 int64_t get_realtime_us(void);
 int64_t get_montonictime_us(void);
 
 void sha256_hex2digest(const char *str, char_u buf[SHA256_BLOCK_SIZE]);
+const char *
+sha256_digest2hex(const char_u hash[SHA256_BLOCK_SIZE], char buf[65]);
+
+int wlip_mkdir(const char *path);
 
 // vim: ts=4 sw=4 sts=4 et
