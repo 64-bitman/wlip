@@ -84,6 +84,8 @@ lua_func_unref(void *ptr)
     luaL_unref(WLUA_L, LUA_REGISTRYINDEX, *(int *)ptr);
 }
 
+static void free_receive_context(clipboard_receivectx_T *ctx);
+
 void
 clipboard_free(clipboard_T *cb)
 {
@@ -96,10 +98,7 @@ clipboard_free(clipboard_T *cb)
         wlselection_unref(cb->selections[i]);
 
     if (cb->recv_ctx != NULL)
-    {
-        clipentry_unref(cb->recv_ctx->entry);
-        wlip_free(cb->recv_ctx);
-    }
+        free_receive_context(cb->recv_ctx);
 
     array_clear_func(&cb->event_cb.selection_start, lua_func_unref);
     array_clear_func(&cb->event_cb.selection_end, lua_func_unref);
@@ -322,6 +321,23 @@ get_next_mimetype(wlselection_T *sel, hashtableiter_T *iter)
     return -1;
 }
 
+static void
+free_receive_context(clipboard_receivectx_T *ctx)
+{
+    assert(ctx != NULL);
+
+    if (ctx->entry->clipboard->recv_ctx == ctx)
+        ctx->entry->clipboard->recv_ctx = NULL;
+
+    wlselection_unref(ctx->sel);
+    clipentry_unref(ctx->entry);
+    hashtable_clear_all(&ctx->mime_types, 0);
+    if (ctx->data != NULL)
+        clipdata_unref(ctx->data);
+    wlip_free(ctx);
+    close(ctx->fd);
+}
+
 static bool
 receive_check_cb(int fd, int revents, void *udata)
 {
@@ -406,6 +422,7 @@ receive_check_cb(int fd, int revents, void *udata)
             }
             else
             {
+                ctx->fd = next_fd;
                 sha256_init(&ctx->sha);
                 event_add_fd(next_fd, POLLIN, 0, NULL, receive_check_cb, ctx);
             }
@@ -427,16 +444,7 @@ receive_check_cb(int fd, int revents, void *udata)
         return false;
 
 exit:
-    if (ctx->entry->clipboard->recv_ctx == ctx)
-        ctx->entry->clipboard->recv_ctx = NULL;
-
-    wlselection_unref(ctx->sel);
-    clipentry_unref(ctx->entry);
-    hashtable_clear_all(&ctx->mime_types, 0);
-    if (ctx->data != NULL)
-        clipdata_unref(ctx->data);
-    wlip_free(ctx);
-    close(fd);
+    free_receive_context(ctx);
     return true;
 }
 
@@ -473,6 +481,7 @@ clipboard_push_selection(
 
         if (fd != -1)
         {
+            ctx->fd = fd;
             ctx->entry = entry;
             ctx->mime_types = mime_types;
             ctx->sel = wlselection_ref(sel);

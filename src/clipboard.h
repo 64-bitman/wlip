@@ -84,6 +84,7 @@ struct clipentry_S
 // Internal context used when receiving mime types;
 typedef struct
 {
+    int fd;
     hashtable_T mime_types;
     hashtableiter_T iter;
     clipentry_T *entry;

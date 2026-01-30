@@ -119,6 +119,8 @@ typedef struct wlselection_S
         void *dummy;
     } offer;
 
+    int null_timer_id; // 0 if not set
+
     bool ignore_next_null; // If next selection event should be ignored (if it
                            // is NULL).
 
@@ -494,6 +496,16 @@ wlseat_mark_invalid(wlseat_T *seat)
     assert(seat != NULL);
 
     seat->started = false;
+    if (seat->regular.null_timer_id != 0)
+    {
+        event_remove_timer(seat->regular.null_timer_id);
+        wlseat_unref(seat);
+    }
+    if (seat->primary.null_timer_id != 0)
+    {
+        event_remove_timer(seat->primary.null_timer_id);
+        wlseat_unref(seat);
+    }
     wlseat_unref(seat);
 }
 
@@ -1013,6 +1025,7 @@ null_delay_cb(void *udata)
     else
         wlip_debug("NULL selection event is invalid");
 
+    sel->null_timer_id = 0;
     wlseat_unref(sel->seat);
     return true;
 }
@@ -1042,6 +1055,13 @@ device_listener_event_xselection(
             wlip_debug("Ignoring this NULL selection event");
             return;
         }
+    }
+
+    if (sel->null_timer_id != 0)
+    {
+        event_remove_timer(sel->null_timer_id);
+        wlseat_unref(sel->seat);
+        sel->null_timer_id = 0;
     }
 
     wlip_debug("Received %s selection for seat '%s'", sel_str, seat->name);
@@ -1075,7 +1095,7 @@ device_listener_event_xselection(
 
         // Must add reference since seat may become invalid during the wait.
         wlseat_ref(seat);
-        event_add_timer(1, null_delay_cb, sel);
+        sel->null_timer_id = event_add_timer(1, null_delay_cb, sel);
     }
     else
     {
