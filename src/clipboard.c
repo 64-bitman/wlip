@@ -334,8 +334,8 @@ free_receive_context(clipboard_receivectx_T *ctx)
     hashtable_clear_all(&ctx->mime_types, 0);
     if (ctx->data != NULL)
         clipdata_unref(ctx->data);
-    wlip_free(ctx);
     close(ctx->fd);
+    wlip_free(ctx);
 }
 
 static bool
