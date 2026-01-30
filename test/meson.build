@@ -13,7 +13,6 @@ foreach test : tests
     sources,
     dependencies: [sqlite_dep, wl_dep, jsonc_dep, lua_dep],
     include_directories: [test_includes, includes],
-    link_with: link_with,
     c_args : ['-DTESTING']
   )
 

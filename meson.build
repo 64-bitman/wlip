@@ -14,12 +14,11 @@ add_project_arguments(
 
 sources = []
 includes = []
-link_with = []
 
 sqlite_dep = dependency('sqlite3', version: '>=3.35.0')
 wl_dep = dependency('wayland-client')
 jsonc_dep = dependency('json-c')
-lua_dep = dependency('lua', version: '>=5.4')
+lua_dep = dependency('lua5.4')
 
 subdir('src')
 
@@ -37,7 +36,6 @@ wlip = executable(
   version_h,
   include_directories: includes,
   dependencies: [sqlite_dep, wl_dep, jsonc_dep, lua_dep],
-  link_with: link_with
 )
 
 subdir('test')

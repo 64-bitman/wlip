@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 // Maximum number of event sources that can be polled for at once.
 #define MAX_SOURCES 32
