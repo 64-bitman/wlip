@@ -2,6 +2,8 @@
 #include "alloc.h"
 #include "database.h"
 #include "event.h"
+#include "lua/api/api_clipboard.h"
+#include "lua/script.h"
 #include "util.h"
 #include "wayland.h"
 #include <assert.h>
@@ -66,6 +68,9 @@ clipboard_new(const char *name)
     cb->no_database = false;
     cb->selections_len = 0;
 
+    array_init(&cb->event_cb.selection_start, sizeof(int), 4);
+    array_init(&cb->event_cb.selection_end, sizeof(int), 4);
+
     hashtable_add(&CLIPBOARDS, b, cb->name, hash);
 
     wlip_debug("New clipboard '%s'", name);
@@ -73,7 +78,12 @@ clipboard_new(const char *name)
     return cb;
 }
 
-#ifdef TESTING
+static void
+lua_func_unref(void *ptr)
+{
+    luaL_unref(WLUA_L, LUA_REGISTRYINDEX, *(int *)ptr);
+}
+
 void
 clipboard_free(clipboard_T *cb)
 {
@@ -90,6 +100,10 @@ clipboard_free(clipboard_T *cb)
         clipentry_unref(cb->recv_ctx->entry);
         wlip_free(cb->recv_ctx);
     }
+
+    array_clear_func(&cb->event_cb.selection_start, lua_func_unref);
+    array_clear_func(&cb->event_cb.selection_end, lua_func_unref);
+
     wlip_free(cb);
 }
 
@@ -104,7 +118,6 @@ free_clipboards(void)
     );
     memset(&CLIPBOARDS, 0, sizeof(CLIPBOARDS));
 }
-#endif
 
 /*
  * Add the selection to the clipboard so it is synced with it. Note that this
@@ -124,12 +137,18 @@ clipboard_add_selection(clipboard_T *cb, wlselection_T *sel)
         return false;
     }
 
+    // Check if selection is already added
+    for (uint32_t i = 0; i < cb->selections_len; i++)
+        if (cb->selections[i] == sel)
+            return false;
+
     cb->selections[cb->selections_len++] = wlselection_ref(sel);
     return true;
 }
 
 /*
  * Set the clipboard to the entry, which may be NULL to clear the clipboard.
+ * Does not add a new reference to "entry".
  */
 void
 clipboard_set(clipboard_T *cb, clipentry_T *entry)
@@ -189,6 +208,61 @@ clipboard_load(clipboard_T *cb, int64_t idx)
 }
 
 /*
+ * Add the given reference to the Lua callback to the clipboard for the
+ * specified event.
+ */
+void
+clipboard_watch_event(clipboard_T *cb, const char *event, int ref)
+{
+    assert(cb != NULL);
+    assert(event != NULL);
+
+    array_T *arr;
+
+    if (strcmp(event, "selection.start") == 0)
+        arr = &cb->event_cb.selection_start;
+    else if (strcmp(event, "selection.end") == 0)
+        arr = &cb->event_cb.selection_end;
+    else
+    {
+        wlip_warn("Event '%s' does not exist for clipboard", event);
+        return;
+    }
+
+    array_grow(arr, 1);
+    ((int *)arr->data)[arr->len++] = ref;
+}
+
+/*
+ * Remove the reference to the Lua callback from the clipboard. Returns true if
+ * it was removed.
+ */
+bool
+clipboard_unwatch_event(clipboard_T *cb, int ref)
+{
+    assert(cb != NULL);
+
+    array_T *arrays[] = {
+        &cb->event_cb.selection_start, &cb->event_cb.selection_end
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(arrays); i++)
+    {
+        int *refs = arrays[i]->data;
+
+        for (uint32_t i = 0; i < arrays[i]->len; i++)
+        {
+            if (refs[i] == ref)
+            {
+                refs[i] = refs[--arrays[i]->len];
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/*
  * Set the clipboard to the given entry and sync all selections. Takes ownership
  * of "entry". If "entry" is NULL, then all selections are cleared. "source"
  * should be the selection that caused a selection event, otherwise NULL.
@@ -199,6 +273,12 @@ set_entry(clipentry_T *entry, wlselection_T *source)
     assert(entry != NULL);
 
     clipboard_T *cb = entry->clipboard;
+
+    if (!wlua_clipboard_emit_selection_end(cb, entry))
+    {
+        clipentry_unref(entry);
+        return;
+    }
 
     clipboard_set(cb, entry);
 
@@ -220,15 +300,15 @@ set_entry(clipentry_T *entry, wlselection_T *source)
  * descriptor. Returns -1 if at the end.
  */
 static int
-get_next_mimetype(wlselection_T *sel, uint32_t found, array_T *mime_types)
+get_next_mimetype(wlselection_T *sel, hashtableiter_T *iter)
 {
     assert(sel != NULL);
-    assert(mime_types != NULL);
+    assert(iter != NULL);
 
-    for (uint32_t i = found; i < mime_types->len; i++)
+    char *mime_type;
+
+    while ((mime_type = hashtableiter_next(iter, 0)) != NULL)
     {
-        char *mime_type = ((char **)mime_types->data)[i];
-
         int fd = wlselection_get_fd(sel, mime_type);
 
         if (fd == -2)
@@ -258,7 +338,7 @@ receive_check_cb(int fd, int revents, void *udata)
     // there is no data in the pipe.
     if (revents & (POLLIN | POLLHUP))
     {
-        char *mime_type = ((char **)ctx->mime_types.data)[ctx->n_received];
+        char *mime_type = hashtableiter_current(&ctx->iter, 0);
 
         // Create clipdata_T if we haven't
         if (ctx->data == NULL)
@@ -272,8 +352,9 @@ receive_check_cb(int fd, int revents, void *udata)
             goto exit;
         }
 
-        ssize_t r =
-            read(fd, ctx->data->content.data + ctx->data->content.len, 512);
+        ssize_t r = read(
+            fd, (char_u *)ctx->data->content.data + ctx->data->content.len, 512
+        );
 
         if (r == -1)
         {
@@ -306,12 +387,10 @@ receive_check_cb(int fd, int revents, void *udata)
             sha256_final(&ctx->sha, ctx->data->id);
             ctx->data->state = DATA_STATE_LOADED;
 
-            ctx->n_received++;
             ctx->data = NULL;
             close(fd);
 
-            int next_fd =
-                get_next_mimetype(ctx->sel, ctx->n_received, &ctx->mime_types);
+            int next_fd = get_next_mimetype(ctx->sel, &ctx->iter);
 
             if (next_fd == -1 || next_fd == -2)
             {
@@ -322,7 +401,7 @@ receive_check_cb(int fd, int revents, void *udata)
                 set_entry(ctx->entry, ctx->sel);
 
                 wlselection_unref(ctx->sel);
-                array_clear_all(&ctx->mime_types);
+                hashtable_clear_all(&ctx->mime_types, 0);
                 wlip_free(ctx);
             }
             else
@@ -353,10 +432,11 @@ exit:
 
     wlselection_unref(ctx->sel);
     clipentry_unref(ctx->entry);
-    array_clear_all(&ctx->mime_types);
+    hashtable_clear_all(&ctx->mime_types, 0);
     if (ctx->data != NULL)
         clipdata_unref(ctx->data);
     wlip_free(ctx);
+    close(fd);
     return true;
 }
 
@@ -366,7 +446,7 @@ exit:
  */
 void
 clipboard_push_selection(
-    clipboard_T *cb, wlselection_T *sel, array_T mime_types
+    clipboard_T *cb, wlselection_T *sel, hashtable_T mime_types
 )
 {
     assert(cb != NULL);
@@ -378,22 +458,23 @@ clipboard_push_selection(
 
     clipentry_T *entry = clipentry_new(NULL, cb);
 
-    entry->creation_time = get_realtime_us();
-    entry->starred = false;
+    wlua_clipboard_emit_selection_start(cb, &mime_types);
 
-    if (mime_types.data != NULL && mime_types.len > 0)
+    if (mime_types.buckets != NULL && mime_types.len > 0)
     {
+        clipboard_receivectx_T *ctx =
+            wlip_calloc(1, sizeof(clipboard_receivectx_T));
+
+        ctx->mime_types = mime_types;
+        hashtableiter_init(&ctx->iter, &ctx->mime_types);
+
         // Receive first mime type
-        int fd = get_next_mimetype(sel, 0, &mime_types);
+        int fd = get_next_mimetype(sel, &ctx->iter);
 
         if (fd != -1)
         {
-            clipboard_receivectx_T *ctx =
-                wlip_calloc(1, sizeof(clipboard_receivectx_T));
-
             ctx->entry = entry;
             ctx->mime_types = mime_types;
-            ctx->n_received = 0;
             ctx->sel = wlselection_ref(sel);
             ctx->cancelled = false;
             sha256_init(&ctx->sha);
@@ -402,12 +483,39 @@ clipboard_push_selection(
             event_add_fd(fd, POLLIN, 0, NULL, receive_check_cb, ctx);
             return;
         }
+        wlip_free(ctx);
     }
 
     // No mime types offered, still let the entry pass through, user may
     // ignore it via scripting (TODO).
-    array_clear(&mime_types);
+    hashtable_clear_all(&mime_types, 0);
     set_entry(entry, sel);
+}
+
+/*
+ * Same as database_deserialize(), but if the clipboard has no database (no
+ * history), then the currently stored entry is returned. Returns OK on success
+ * and FAIL on failure.
+ */
+int
+clipboard_get_entries(
+    clipboard_T *cb, int64_t start, int64_t num, deserialize_func_T func,
+    void *udata
+)
+{
+    assert(cb != NULL);
+
+    if (start < 0 || num <= 0)
+        return FAIL;
+
+    if (cb->no_database)
+    {
+        if (cb->entry != NULL)
+            func(clipentry_ref(cb->entry), udata);
+        return OK;
+    }
+
+    return database_deserialize(start, num, cb, func, udata);
 }
 
 /*
@@ -437,15 +545,14 @@ get_clipboards(void)
 
 /*
  * Allocate a new entry with the given ID and associate it with "cb". If "id" is
- * NULL, then the ID is automatically generated. Creation time and starred must
- * manually be set.
+ * NULL, then the ID and creation time is automatically generated.
  */
 clipentry_T *
 clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb)
 {
     assert(cb != NULL);
 
-    clipentry_T *entry = wlip_malloc(sizeof(clipentry_T));
+    clipentry_T *entry = wlip_calloc(1, sizeof(clipentry_T));
 
     if (id == NULL)
     {
@@ -457,6 +564,7 @@ clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb)
         sha256_update(&ctx, (char_u *)cb->name, cb->name_len);
         sha256_update(&ctx, (char_u *)&time, sizeof(time));
         sha256_final(&ctx, entry->id);
+        entry->creation_time = time;
     }
     else
         memcpy(entry->id, id, SHA256_BLOCK_SIZE);
@@ -505,17 +613,16 @@ clipentry_unref(clipentry_T *entry)
 }
 
 /*
- * Allocate a new attribute with the given name and type. The value of the
+ * Allocate a new attribute with the given name. The type and value of the
  * attribute must be set manually after.
  */
 attribute_T *
-attribute_new(const char *name, attribute_type_T type)
+attribute_new(const char *name)
 {
     assert(name != NULL);
 
     attribute_T *attr = wlip_malloc(sizeof(attribute_T) + STRLEN(name));
 
-    attr->type = type;
     sprintf(attr->name, "%s", name);
 
     return attr;

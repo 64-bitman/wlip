@@ -1,6 +1,7 @@
 #pragma once
 
 #include "array.h"
+#include "database.h"
 #include "hashtable.h"
 #include "sha256.h"
 #include "util.h"
@@ -35,9 +36,8 @@ typedef enum
 {
     ATTRIBUTE_TYPE_REMOVED,
     ATTRIBUTE_TYPE_INTEGER,
-    ATTRIBUTE_TYPE_FLOAT,
+    ATTRIBUTE_TYPE_NUMBER,
     ATTRIBUTE_TYPE_STRING,
-    ATTRIBUTE_TYPE_STATIC_STRING,
 } attribute_type_T;
 
 // An attribute for an entry, which can either be a boolean, integer, float, or
@@ -47,9 +47,8 @@ typedef struct
     union
     {
         int64_t integer;
-        double real;
+        double number;
         char *str; // Must be freed
-        const char *sstr;
     } val;
     // If type is changed to ATTRIBUTE_TYPE_REMOVED, then the allocated string
     // must be freed as well.
@@ -61,7 +60,8 @@ typedef struct clipboard_S clipboard_T;
 
 // Clipboard entry, each entry has a globally unique identifier. An entry may
 // contain attributes and have mime types.
-typedef struct
+typedef struct clipentry_S clipentry_T;
+struct clipentry_S
 {
     int refcount;
 
@@ -77,15 +77,15 @@ typedef struct
     // Pointer to clipboard that this entry is associated with. If NULL, then
     // clipboard doesn't exist anymore.
     clipboard_T *clipboard;
-} clipentry_T;
+};
 
 #define ID_ISEQUAL(a, b) (memcmp((a), (b), SHA256_BLOCK_SIZE) == 0)
 
 // Internal context used when receiving mime types;
 typedef struct
 {
-    uint32_t n_received;
-    array_T mime_types;
+    hashtable_T mime_types;
+    hashtableiter_T iter;
     clipentry_T *entry;
     clipdata_T *data;
     wlselection_T *sel;
@@ -120,22 +120,33 @@ struct clipboard_S
     wlselection_T *selections[MAX_SELECTIONS];
     uint32_t selections_len;
 
+    // Holds references to Lua callbacks for each event.
+    struct
+    {
+        array_T selection_start; // 'selection.start' event
+        array_T selection_end;   // 'selection.end' event
+    } event_cb;
+
     uint32_t name_len;
     // May only contain alphanumeric characters and underscore.
     char name[1]; // Actually longer (clipboard name)
 };
 
 clipboard_T *clipboard_new(const char *name);
-#ifdef TESTING
 void clipboard_free(clipboard_T *cb);
 void free_clipboards(void);
-#endif
 bool clipboard_add_selection(clipboard_T *cb, wlselection_T *sel);
 void clipboard_set(clipboard_T *cb, clipentry_T *entry);
 void clipboard_sync(clipboard_T *cb, wlselection_T *source);
 bool clipboard_load(clipboard_T *cb, int64_t idx);
+void clipboard_watch_event(clipboard_T *cb, const char *event, int ref);
+bool clipboard_unwatch_event(clipboard_T *cb, int ref);
 void clipboard_push_selection(
-    clipboard_T *cb, wlselection_T *sel, array_T mime_types
+    clipboard_T *cb, wlselection_T *sel, hashtable_T mime_types
+);
+int clipboard_get_entries(
+    clipboard_T *cb, int64_t start, int64_t num, deserialize_func_T func,
+    void *udata
 );
 clipboard_T *find_clipboard(const char *name);
 hashtable_T *get_clipboards(void);
@@ -144,7 +155,7 @@ clipentry_T *clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb);
 clipentry_T *clipentry_ref(clipentry_T *entry);
 void clipentry_unref(clipentry_T *entry);
 
-attribute_T *attribute_new(const char *name, attribute_type_T type);
+attribute_T *attribute_new(const char *name);
 void attribute_free(attribute_T *attr);
 
 clipdata_T *clipdata_new(void);

@@ -1,7 +1,12 @@
 #pragma once
 
-#include "clipboard.h"
+#include "util.h"
+#include <stdint.h>
 
+typedef struct clipboard_S clipboard_T;
+typedef struct clipentry_S clipentry_T;
+
+// Callback takes ownership of "entry".
 typedef void (*deserialize_func_T)(clipentry_T *entry, void *udata);
 
 void database_uninit(void);

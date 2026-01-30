@@ -318,6 +318,34 @@ event_add_fd(
 }
 
 /*
+ * Remove and close all sources that have the given fd. Note that file
+ * descriptors may be reused by the kernel.
+ */
+void
+event_remove_fd(int fd)
+{
+    assert(fd >= 0);
+
+    eventsource_T *source = EVENT.source;
+    eventsource_T *prev = NULL;
+
+    while (source != NULL)
+    {
+        eventsource_T *next = source->next;
+        if (source->fd == fd)
+        {
+            if (prev == NULL)
+                EVENT.source = next;
+            else
+                prev->next = next;
+            close(source->fd);
+            wlip_free(source);
+        }
+        source = next;
+    }
+}
+
+/*
  * Add a timer to the event loop with the given interval. Returns an ID that can
  * be used to remove the timer.
  */
@@ -364,8 +392,8 @@ event_remove_timer(uint32_t id)
 {
     assert(id > 0);
 
-    eventtimer_T *prevt = NULL;
     eventtimer_T *timer = EVENT.timer;
+    eventtimer_T *prev = NULL;
 
     while (timer != NULL)
     {
@@ -373,13 +401,13 @@ event_remove_timer(uint32_t id)
         {
             eventtimer_T *next = timer->next;
             wlip_free(timer);
-            if (prevt == NULL)
+            if (prev == NULL)
                 EVENT.timer = next;
             else
-                prevt->next = next;
+                prev->next = next;
             return true;
         }
-        prevt = timer;
+        prev = timer;
         timer = timer->next;
     }
 

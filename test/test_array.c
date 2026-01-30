@@ -25,7 +25,7 @@ test_array_grow(void)
     array_grow(&arr, 2);
     TEST_ASSERT_EQUAL_UINT32(10, arr.alloc_len);
 
-    // Should grow by 200 items (technically
+    // Should grow by 200 items
     for (int i = 0; i < 10; i++)
         ((char **)arr.data)[i] = "hello";
     arr.len = 10;

@@ -1,3 +1,4 @@
+#include "clipboard.h"
 #include "database.h"
 #include "unity.h"
 #include <sqlite3.h>

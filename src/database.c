@@ -202,9 +202,9 @@ static struct
 // the first database function call.
 static struct
 {
-    char local_dir[PATH_MAX]; // Directory where everything is stored
-    char data_dir[PATH_MAX];  // Directory inside local_dir where files are
-                              // stored.
+    char *local_dir; // Directory where everything is stored
+    char *data_dir;  // Directory inside local_dir where files are
+                     // stored.
 
     sqlite3 *handle; // NULL if not initialized
 } DB;
@@ -321,6 +321,8 @@ database_init()
         return OK;
 
     const char *wlip_database = getenv("WLIP_DATABASE");
+    char local_dir[PATH_MAX];
+    char data_dir[PATH_MAX];
     char location[PATH_MAX];
 
     if (wlip_database != NULL)
@@ -337,21 +339,21 @@ database_init()
 
             if (home != NULL)
                 wlip_snprintf(
-                    DB.local_dir, PATH_MAX, "%s/.local/share/wlip", home
+                    local_dir, PATH_MAX, "%s/.local/share/wlip", home
                 );
             else
             {
                 struct passwd *pw = getpwuid(getuid());
                 wlip_snprintf(
-                    DB.local_dir, PATH_MAX, "%s/.local/share/wlip", pw->pw_dir
+                    local_dir, PATH_MAX, "%s/.local/share/wlip", pw->pw_dir
                 );
             }
         }
         else
-            wlip_snprintf(DB.local_dir, PATH_MAX, "%s/wlip", datahome);
+            wlip_snprintf(local_dir, PATH_MAX, "%s/wlip", datahome);
     }
-    wlip_snprintf(DB.data_dir, PATH_MAX, "%s/data", DB.local_dir);
-    wlip_snprintf(location, PATH_MAX, "%s/history.sqlite3", DB.local_dir);
+    wlip_snprintf(data_dir, PATH_MAX, "%s/data", local_dir);
+    wlip_snprintf(location, PATH_MAX, "%s/history.sqlite3", local_dir);
 
     int flags =
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX;
@@ -360,11 +362,11 @@ database_init()
         flags |= SQLITE_OPEN_MEMORY;
     else
 #endif
-        if (wlip_mkdir(DB.local_dir) == -1 || wlip_mkdir(DB.data_dir) == -1)
+        if (wlip_mkdir(local_dir) == -1 || wlip_mkdir(data_dir) == -1)
     {
         wlip_error(
-            "Failed creating database directory '%s' and '%s': %s",
-            DB.local_dir, DB.data_dir, strerror(errno)
+            "Failed creating database directory '%s' and '%s': %s", local_dir,
+            data_dir, strerror(errno)
         );
         return FAIL;
     }
@@ -479,6 +481,9 @@ database_init()
             return FAIL;
         }
     }
+
+    DB.local_dir = wlip_strdup(local_dir);
+    DB.data_dir = wlip_strdup(data_dir);
 #ifdef TESTING
     hashtable_init(&MEMORY_STORE);
 #endif
@@ -525,6 +530,8 @@ database_uninit(void)
     );
 #endif
 
+    wlip_free(DB.local_dir);
+    wlip_free(DB.data_dir);
     sqlite3_close(DB.handle);
     memset(&DB, 0, sizeof(DB));
 }
@@ -700,14 +707,13 @@ serialize_attributes(clipentry_T *entry)
         switch (attr->type)
         {
         case ATTRIBUTE_TYPE_STRING:
-        case ATTRIBUTE_TYPE_STATIC_STRING:
             sqlite3_bind_text(stmt, 3, attr->val.str, -1, SQLITE_STATIC);
             break;
         case ATTRIBUTE_TYPE_INTEGER:
             sqlite3_bind_int64(stmt, 3, attr->val.integer);
             break;
-        case ATTRIBUTE_TYPE_FLOAT:
-            sqlite3_bind_double(stmt, 3, attr->val.real);
+        case ATTRIBUTE_TYPE_NUMBER:
+            sqlite3_bind_double(stmt, 3, attr->val.number);
             break;
         case ATTRIBUTE_TYPE_REMOVED:
             sqlite3_bind_blob(
@@ -844,12 +850,15 @@ database_load_data(
     {
         wlip_warn("Error reading file '%s': %s", path, strerror(errno));
         clipdata_unref(data);
+        fclose(fp);
         return NULL;
     }
 
     data->content.len = size;
     data->state = DATA_STATE_LOADED;
     memcpy(data->id, digest, SHA256_BLOCK_SIZE);
+
+    fclose(fp);
 
     return data;
 }
@@ -942,7 +951,7 @@ deserialize_attributes(clipentry_T *entry)
         if (ret == SQLITE_ROW)
         {
             const char *name = (const char *)sqlite3_column_text(stmt, 0);
-            attribute_T *attr = attribute_new(name, ATTRIBUTE_TYPE_REMOVED);
+            attribute_T *attr = attribute_new(name);
             int type = sqlite3_column_type(stmt, 1);
 
             switch (type)
@@ -952,8 +961,8 @@ deserialize_attributes(clipentry_T *entry)
                 attr->val.integer = sqlite3_column_int64(stmt, 1);
                 break;
             case SQLITE_FLOAT:
-                attr->type = ATTRIBUTE_TYPE_FLOAT;
-                attr->val.real = sqlite3_column_double(stmt, 1);
+                attr->type = ATTRIBUTE_TYPE_NUMBER;
+                attr->val.number = sqlite3_column_double(stmt, 1);
                 break;
             case SQLITE_TEXT:
                 attr->type = ATTRIBUTE_TYPE_STRING;
@@ -967,7 +976,7 @@ deserialize_attributes(clipentry_T *entry)
             }
 
             hash_T hash = hash_get(name);
-            hashbucket_T *b = hashtable_lookup(&entry->mime_types, name, hash);
+            hashbucket_T *b = hashtable_lookup(&entry->attributes, name, hash);
 
             // Should always be empty
             if (HB_ISEMPTY(b))
@@ -1054,7 +1063,7 @@ database_deserialize(
 )
 {
     assert(start >= 0);
-    assert(num >= 0);
+    assert(num > 0);
     assert(cb != NULL);
     assert(func != NULL);
 

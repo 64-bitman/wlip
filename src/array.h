@@ -20,9 +20,10 @@ typedef struct
 void array_init(array_T *self, uint32_t item_size, uint32_t grow_len);
 void array_clear(array_T *self);
 void array_clear_all(array_T *self);
+void array_clear_func(array_T *self, array_freefunc_T func);
 bool array_grow(array_T *self, uint32_t n_items);
 void array_append(array_T *self, const char *fmt, ...);
 void array_appendc(array_T *self, char c);
-void array_add(array_T *self, void *data, uint32_t len);
+void array_add(array_T *self, const void *data, uint32_t len);
 
 // vim: ts=4 sw=4 sts=4 et

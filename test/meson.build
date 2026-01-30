@@ -3,7 +3,7 @@ test_includes = []
 
 subdir('unity')
 
-tests = ['array', 'database', 'hashtable']
+tests = ['array', 'database', 'hashtable', 'ringbuffer']
 
 foreach test : tests
   exe = executable(
@@ -11,7 +11,7 @@ foreach test : tests
     'test_' + test + '.c',
     test_sources,
     sources,
-    dependencies: [sqlite_dep, wl_dep, jansson_dep, lua_dep],
+    dependencies: [sqlite_dep, wl_dep, jsonc_dep, lua_dep],
     include_directories: [test_includes, includes],
     link_with: link_with,
     c_args : ['-DTESTING']

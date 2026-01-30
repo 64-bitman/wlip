@@ -286,6 +286,40 @@ hashtable_remove(hashtable_T *self, const char *key)
 }
 
 /*
+ * Remove all items from the hashtable and free them, but don't free the
+ * hash table itself.
+ */
+void
+hashtable_remove_all(hashtable_T *self, uint32_t offset)
+{
+    assert(self != NULL);
+
+    if (self->buckets == NULL)
+        return;
+
+    hashtableiter_T iter = HASHTABLEITER_INIT(self);
+    void *item;
+
+    while ((item = hashtableiter_next(&iter, offset)) != NULL)
+        wlip_free(item);
+
+    self->len = self->tombstones_len = 0;
+    memset(self->buckets, 0, self->alloc_len * sizeof(hashbucket_T));
+    hashtable_resize(self);
+}
+
+void
+hashtableiter_init(hashtableiter_T *self, hashtable_T *ht)
+{
+    assert(self != NULL);
+    assert(ht != NULL);
+
+    self->ht = ht;
+    self->found = 0;
+    self->i = 0;
+}
+
+/*
  * Return the next item in the hash table. Returns NULL if there are no more
  * occupied buckets. "offset" must be the offset of the key member within the
  * item struct.
@@ -318,6 +352,21 @@ hashtableiter_next(hashtableiter_T *self, uint32_t offset)
     }
     self->found++;
     self->i++;
+    return bucket->key - offset;
+}
+
+/*
+ * Return the current item in the hash table iterator. hashtableiter_next() must
+ * have been called at least once before.
+ */
+void *
+hashtableiter_current(hashtableiter_T *self, uint32_t offset)
+{
+    assert(self != NULL);
+    assert(self->i > 0);
+
+    hashbucket_T *bucket = self->ht->buckets + (self->i - 1);
+
     return bucket->key - offset;
 }
 

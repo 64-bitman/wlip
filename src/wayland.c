@@ -119,9 +119,6 @@ typedef struct wlselection_S
         void *dummy;
     } offer;
 
-    // Copied from wlseat_T "mime_types".
-    hashtable_T mime_types;
-
     bool ignore_next_null; // If next selection event should be ignored (if it
                            // is NULL).
 
@@ -148,8 +145,8 @@ typedef struct wlseat_S
         void *dummy;
     } device;
 
-    // Array of mime types for the current data offer event if any.
-    array_T mime_types;
+    // Table of mime types for the current data offer event if any.
+    hashtable_T mime_types;
 
     wlselection_T regular;
     wlselection_T primary;
@@ -340,6 +337,7 @@ wlseat_new(struct wl_seat *proxy, uint32_t name)
     seat->regular.type = WLSELECTION_TYPE_REGULAR;
     seat->primary.type = WLSELECTION_TYPE_PRIMARY;
     seat->refcount = 1;
+    hashtable_init(&seat->mime_types);
 }
 
 /*
@@ -405,9 +403,9 @@ wayland_get_seat(const char *name)
 /*
  * Attach the selection from the seat to the given clipboard, if the selection
  * type is supported. Additionally also start the seat as well if it isn't
- * (start listening for events).
+ * (start listening for events). Returns true if successful.
  */
-void
+bool
 wayland_attach_selection(
     wlseat_T *seat, wlselection_type_T type, clipboard_T *cb
 )
@@ -416,14 +414,22 @@ wayland_attach_selection(
 
     wlselection_T *sel = wlselection_get(seat, type);
 
+    wlseat_start(seat);
+    if (!sel->available || sel->clipboard != NULL)
+        return false;
+
+    // TODO: stop seat if fail?
     if (clipboard_add_selection(cb, sel))
     {
-        wlseat_start(seat);
-        if (!sel->available)
-            return;
-
+        wlip_debug(
+            "Attaching %s %s selection to clipboard '%s'", seat->name,
+            wlselection_str(type), cb->name
+        );
         sel->clipboard = cb;
     }
+    else
+        return false;
+    return true;
 }
 
 static void
@@ -445,7 +451,7 @@ wlseat_destroy(wlseat_T *seat)
     else
         wl_seat_destroy(seat->proxy);
 
-    array_clear_all(&seat->mime_types);
+    hashtable_clear_all(&seat->mime_types, 0);
     wlip_free(seat);
 }
 
@@ -540,21 +546,20 @@ check_cb(int fd UNUSED, int revents, void *udata UNUSED)
 }
 
 /*
- * Initialize the Wayland connection using the given display and attach it to
- * the event loop. If "display" is NULL, then libwayland chooses it. Returns OK
+ * Initialize the Wayland connection and attach it to the event loop. Returns OK
  * on success and FAIL on failure.
  */
 int
-wayland_init(const char *display)
+wayland_init(void)
 {
     assert(CONNECTION.display == NULL);
 
-    const char *name = display == NULL ? getenv("WAYLAND_DISPLAY") : display;
+    const char *name = getenv("WAYLAND_DISPLAY");
 
-    CONNECTION.display = wl_display_connect(display);
+    CONNECTION.display = wl_display_connect(NULL);
     if (CONNECTION.display == NULL)
     {
-        wlip_log("Failed connecting to display '%s'", name);
+        wlip_warn("Failed connecting to display '%s'", name);
         return FAIL;
     }
 
@@ -586,6 +591,9 @@ wayland_uninit(void)
 {
     if (CONNECTION.display == NULL)
         return;
+
+    // Not needed but I think its good practice to do
+    event_remove_fd(wl_display_get_fd(CONNECTION.display));
 
     if (CONNECTION.protocol == DATA_PROTOCOL_EXT)
         ext_data_control_manager_v1_destroy(CONNECTION.globals.dac.ext);
@@ -681,7 +689,7 @@ send_check_cb(int fd, int revents, void *udata)
 
     if (revents & POLLOUT)
     {
-        char_u *buf = ctx->data->content.data + ctx->w;
+        char_u *buf = (char_u *)ctx->data->content.data + ctx->w;
 
         ssize_t w = write(fd, buf, ctx->data->content.len - ctx->w);
 
@@ -689,7 +697,7 @@ send_check_cb(int fd, int revents, void *udata)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
                 return false;
-            wlip_log("Failed writing mime type contents: %s", strerror(errno));
+            wlip_warn("Error writing mime type contents: %s", strerror(errno));
         }
         else
         {
@@ -701,7 +709,7 @@ send_check_cb(int fd, int revents, void *udata)
     else if (revents == 0)
         return false;
     else
-        wlip_log("Error occured while sending mime type contents");
+        wlip_warn("Error occured while sending mime type contents");
 
     // Error occured or finished sending all data
     clipdata_unref(ctx->data);
@@ -822,9 +830,6 @@ wlselection_set(wlselection_T *sel)
 
     if (entry != NULL)
     {
-        hashtableiter_T iter = HASHTABLEITER_INIT(&entry->mime_types);
-        mimetype_T *mime_type;
-
         // Create data source and start listening to it
         if (CONNECTION.protocol == DATA_PROTOCOL_EXT)
         {
@@ -844,6 +849,9 @@ wlselection_set(wlselection_T *sel)
                 sel->source.wlr, &wlr_source_listener, sel
             );
         }
+
+        hashtableiter_T iter = HASHTABLEITER_INIT(&entry->mime_types);
+        mimetype_T *mime_type;
 
         while (
             (mime_type = hashtableiter_next(&iter, offsetof(mimetype_T, name)))
@@ -885,7 +893,7 @@ wlselection_get_fd(wlselection_T *sel, const char *mime_type)
 
     if (pipe(fds) == -1)
     {
-        wlip_log("Failed opening pipe: %s", strerror(errno));
+        wlip_warn("Failed opening pipe: %s", strerror(errno));
         return -1;
     }
 
@@ -904,7 +912,7 @@ wlselection_get_fd(wlselection_T *sel, const char *mime_type)
 
     if (wl_display_flush(CONNECTION.display) == -1)
     {
-        wlip_log("Failed flushing display: %s", strerror(errno));
+        wlip_warn("Failed flushing display: %s", strerror(errno));
         close(fds[0]);
         return -1;
     }
@@ -935,9 +943,12 @@ offer_listener_event_offer(wlseat_T *seat, const char *mime_type)
     assert(seat != NULL);
     assert(mime_type != NULL);
 
-    array_grow(&seat->mime_types, 1);
-    ((char **)seat->mime_types.data)[seat->mime_types.len++] =
-        wlip_strdup(mime_type);
+    hash_T hash = hash_get(mime_type);
+    hashbucket_T *b = hashtable_lookup(&seat->mime_types, mime_type, hash);
+
+    // There may be duplicate mime types in the offer
+    if (HB_ISEMPTY(b))
+        hashtable_add(&seat->mime_types, b, wlip_strdup(mime_type), hash);
 }
 static void
 ext_offer_listener_event_offer(
@@ -967,9 +978,7 @@ static void
 device_listener_event_data_offer(wlseat_T *seat)
 {
     // Remove any previous mime types
-    if (seat->mime_types.data != NULL)
-        array_clear_all(&seat->mime_types);
-    array_init(&seat->mime_types, sizeof(char *), 5);
+    hashtable_remove_all(&seat->mime_types, 0);
 }
 
 static void
@@ -1070,9 +1079,9 @@ device_listener_event_xselection(
     }
     else
     {
-        array_T mime_types = sel->seat->mime_types;
+        hashtable_T mime_types = sel->seat->mime_types;
 
-        memset(&sel->seat->mime_types, 0, sizeof(array_T));
+        memset(&sel->seat->mime_types, 0, sizeof(hashtable_T));
         // Push selection to clipboard
         clipboard_push_selection(sel->clipboard, sel, mime_types);
     }

@@ -13,11 +13,11 @@ typedef struct wlselection_S wlselection_T;
 typedef struct wlseat_S wlseat_T;
 typedef struct clipboard_S clipboard_T;
 
-int wayland_init(const char *display);
+int wayland_init(void);
 void wayland_uninit();
 
 wlseat_T *wayland_get_seat(const char *name);
-void wayland_attach_selection(
+bool wayland_attach_selection(
     wlseat_T *seat, wlselection_type_T type, clipboard_T *cb
 );
 

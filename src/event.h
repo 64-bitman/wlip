@@ -25,5 +25,6 @@ void event_add_fd(
     int fd, int events, int priority, eventprepare_func_T prepare,
     eventcheck_func_T check, void *udata
 );
+void event_remove_fd(int fd);
 int event_add_timer(int interval, eventtimer_func_T func, void *udata);
 bool event_remove_timer(uint32_t id);

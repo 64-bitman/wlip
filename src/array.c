@@ -54,6 +54,22 @@ array_clear_all(array_T *self)
 }
 
 /*
+ * Same as array_clear(), but calls func on each item
+ */
+void
+array_clear_func(array_T *self, array_freefunc_T func)
+{
+    assert(self != NULL);
+
+    if (self->data == NULL)
+        return;
+
+    for (uint32_t i = 0; i < self->len; i++)
+        func(((char *)self->data) + (i * self->item_sz));
+    array_clear(self);
+}
+
+/*
  * Grow the array by "n_items". If the array is already big enough, then nothing
  * is done. Otherwise the required extra number of items to grow by is
  * calculated, and the array is grown by that amount or by "grow_len" (if it is
@@ -70,6 +86,11 @@ array_grow(array_T *self, uint32_t n_items)
     if (self->len + n_items > self->alloc_len)
     {
         // Need to grow array
+
+        // Grow by factor of 1.5 (if n_items is smaller than the 1.5x growth)
+        if (n_items < (self->len / 2))
+            n_items = self->len / 2;
+
         uint32_t extra_len = (self->len + n_items) - self->alloc_len;
         uint32_t new_len = self->len + MAX(self->grow_len, extra_len);
         void *new;
@@ -129,10 +150,13 @@ array_appendc(array_T *self, char c)
  * Append the given chunk of memory to the end of the array, growing as needed.
  */
 void
-array_add(array_T *self, void *data, uint32_t len)
+array_add(array_T *self, const void *data, uint32_t len)
 {
     assert(self != NULL);
     assert(data != NULL);
+
+    if (len == 0)
+        return;
 
     array_grow(self, len);
 

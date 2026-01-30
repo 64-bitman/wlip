@@ -25,8 +25,8 @@ extern const char TOMBSTONE_MARKER;
 #define HBKEY_GET(key, s, keyname) ((s *)((key) - offsetof(s, keyname)))
 #define HB_GET(hb, s, keyname) HBKEY_GET(hb->key, s, keyname)
 
-// Hash table implementation. Uses FNV-1a hash function and open addressed
-// linear probing.
+// Hash table implementation that uses the container_of() pattern. Uses FNV-1a
+// hash function and open addressed linear probing.
 typedef struct
 {
     hashbucket_T *buckets;
@@ -65,8 +65,11 @@ void hashtable_replace(
 );
 void hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket);
 char *hashtable_remove(hashtable_T *self, const char *key);
+void hashtable_remove_all(hashtable_T *self, uint32_t offset);
 
+void hashtableiter_init(hashtableiter_T *self, hashtable_T *ht);
 void *hashtableiter_next(hashtableiter_T *self, uint32_t offset);
+void *hashtableiter_current(hashtableiter_T *self, uint32_t offset);
 void hashtableiter_remove(hashtableiter_T *self);
 
 // vim: ts=4 sw=4 sts=4 et

@@ -18,7 +18,7 @@ link_with = []
 
 sqlite_dep = dependency('sqlite3', version: '>=3.35.0')
 wl_dep = dependency('wayland-client')
-jansson_dep = dependency('jansson', version: '>=2.0.0')
+jsonc_dep = dependency('json-c')
 lua_dep = dependency('lua', version: '>=5.4')
 
 subdir('src')
@@ -36,7 +36,7 @@ wlip = executable(
   sources,
   version_h,
   include_directories: includes,
-  dependencies: [sqlite_dep, wl_dep, jansson_dep, lua_dep],
+  dependencies: [sqlite_dep, wl_dep, jsonc_dep, lua_dep],
   link_with: link_with
 )
 
