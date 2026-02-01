@@ -16,13 +16,16 @@ typedef enum
 
 // Reference counted storage class for a block of memory. "id" is the SHA-256
 // hash of the contents.
-typedef struct
+typedef struct clipdata_S clipdata_T;
+struct clipdata_S
 {
     int refcount;
+    hash_T hash; // Cached
     char_u id[SHA256_BLOCK_SIZE];
     array_T content;
     data_state_T state;
-} clipdata_T;
+    bool exported;
+};
 
 // Holds the information for a mime type.
 typedef struct
@@ -66,6 +69,7 @@ struct clipentry_S
     int refcount;
 
     char_u id[SHA256_BLOCK_SIZE];
+    hash_T hash; // Cached
 
     int64_t creation_time; // In microseconds
     bool starred;          // If true, then entry will not be automatically
@@ -133,9 +137,13 @@ struct clipboard_S
     char name[1]; // Actually longer (clipboard name)
 };
 
+void init_clipboards(void);
+
 clipboard_T *clipboard_new(const char *name);
 void clipboard_free(clipboard_T *cb);
 void free_clipboards(void);
+int clipboard_delete_entry(clipboard_T *cb, int64_t n);
+int clipboard_delete_id(uint8_t id[SHA256_BLOCK_SIZE]);
 bool clipboard_add_selection(clipboard_T *cb, wlselection_T *sel);
 void clipboard_set(clipboard_T *cb, clipentry_T *entry);
 void clipboard_sync(clipboard_T *cb, wlselection_T *source);
@@ -149,10 +157,16 @@ int clipboard_get_entries(
     clipboard_T *cb, int64_t start, int64_t num, deserialize_func_T func,
     void *udata
 );
+int
+clipboard_get_entry(clipboard_T *cb, int64_t n, clipentry_T **store);
+int
+clipboard_get_id(uint8_t id[SHA256_BLOCK_SIZE], clipentry_T **store);
 clipboard_T *find_clipboard(const char *name);
 hashtable_T *get_clipboards(void);
 
-clipentry_T *clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb);
+clipentry_T *clipentry_new(const uint8_t id[SHA256_BLOCK_SIZE], clipboard_T *cb);
+int clipentry_update(clipentry_T *entry);
+clipentry_T *clipentry_get(const uint8_t id[SHA256_BLOCK_SIZE]);
 clipentry_T *clipentry_ref(clipentry_T *entry);
 void clipentry_unref(clipentry_T *entry);
 
@@ -160,6 +174,9 @@ attribute_T *attribute_new(const char *name);
 void attribute_free(attribute_T *attr);
 
 clipdata_T *clipdata_new(void);
+clipdata_T *clipdata_get(const uint8_t id[SHA256_BLOCK_SIZE]);
+void clipdata_export(clipdata_T *data);
+int clipdata_load(clipdata_T *data);
 clipdata_T *clipdata_ref(clipdata_T *data);
 void clipdata_unref(clipdata_T *data);
 

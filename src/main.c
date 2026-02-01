@@ -59,17 +59,17 @@ main(int argc, char *argv[])
         return FAIL;
     }
 
+    init_clipboards();
     if (wayland_init() == FAIL || server_init() == FAIL || lua_init() == FAIL)
         return EXIT_FAILURE;
 
     event_run();
 
+    lua_uninit();
     free_clipboards(); // Must be done before wayland_uninit() (which frees all
                        // proxies), since free_clipboards() may also free seat
                        // proxies.
     wayland_uninit();
-    lua_uninit(); // Must be done after free_clipboards() which unrefs any lua
-                  // callbacks.
     database_uninit();
     server_uninit();
 

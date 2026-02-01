@@ -17,6 +17,8 @@ const char TOMBSTONE_MARKER;
 hash_T
 hash_get(const char *key)
 {
+    assert(key != NULL);
+
     hash_T hash = FNV_OFFSET_BASIS;
 
     // FNV-1a hash function
@@ -29,10 +31,27 @@ hash_get(const char *key)
 }
 
 /*
- * Initialize the given hash table, doesn't allocate any memory yet.
+ * Same as hash_get() but supports binary data
+ */
+hash_T
+hash_get_len(const uint8_t *key, uint32_t len)
+{
+    hash_T hash = FNV_OFFSET_BASIS;
+
+    for (uint32_t i = 0; i < len; i++)
+    {
+        hash ^= (hash_T)key[i];
+        hash *= FNV_PRIME;
+    }
+    return hash;
+}
+
+/*
+ * Initialize the given hash table with the key size (zero if a string), doesn't
+ * allocate any memory yet.
  */
 void
-hashtable_init(hashtable_T *self)
+hashtable_init(hashtable_T *self, uint32_t key_size)
 {
     assert(self != NULL);
 
@@ -41,6 +60,7 @@ hashtable_init(hashtable_T *self)
     self->tombstones_len = 0;
     self->alloc_len = 0;
     self->no_resize = false;
+    self->key_size = key_size;
 }
 
 static void
@@ -105,6 +125,10 @@ hashtable_clear_func(hashtable_T *self, hb_freefunc_T func, uint32_t offset)
     hashtable_clear(self);
 }
 
+#define KEY_EQUAL(ht, bkey, key)                                               \
+    (((ht)->key_size == 0 && strcmp((bkey), (key)) == 0) ||                    \
+     (ht->key_size > 0 && memcmp((bkey), (key), ht->key_size) == 0))
+
 /*
  * Get a bucket from the hash table for the given key. If the key does not exist
  * in the hash table, then an empty bucket will be returned, which may be
@@ -125,9 +149,9 @@ hashtable_lookup(hashtable_T *self, const char *key, hash_T hash)
 
     while (bucket->key != NULL)
     {
-        if (bucket->key != NULL && strcmp(bucket->key, key) == 0)
+        if (!HB_ISEMPTY(bucket) && KEY_EQUAL(self, bucket->key, key))
             return bucket;
-        else if (first_tomb == NULL && *bucket->key == 0)
+        else if (first_tomb == NULL && bucket->key == &TOMBSTONE_MARKER)
             first_tomb = bucket;
 
         // Make sure to wrap around
@@ -207,8 +231,7 @@ hashtable_resize(hashtable_T *self)
 }
 
 /*
- * Add a bucket to the hash table. The bucket must be initially empty. "key" may
- * not be an empty string.
+ * Add a bucket to the hash table. The bucket must be initially empty.
  */
 void
 hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash)
@@ -217,32 +240,13 @@ hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash)
     assert(bucket != NULL);
     assert(HB_ISEMPTY(bucket));
 
-    if (bucket->key != NULL && *bucket->key == 0)
+    if (bucket->key != NULL && bucket->key == &TOMBSTONE_MARKER)
         self->tombstones_len--;
 
     bucket->hash = hash;
     bucket->key = key;
     self->len++;
     hashtable_resize(self);
-}
-
-/*
- * Similar to hashtable_add(), but replaces the key in "bucket" with "key" (hash
- * must be the same). Note that this does not free the existing item in the
- * bucket, that must be done before.
- */
-void
-hashtable_replace(
-    hashtable_T *self UNUSED, hashbucket_T *bucket, char *key,
-    hash_T hash UNUSED
-)
-{
-    assert(self != NULL);
-    assert(bucket != NULL);
-    assert(bucket->hash == hash);
-    assert(!HB_ISEMPTY(bucket));
-
-    bucket->key = key;
 }
 
 /*
@@ -264,15 +268,17 @@ hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket)
 
 /*
  * Same as hashtable_remove_bucket(), but takes care of calculating hash and
- * finding the bucket. Returns the actual key in the item if found, else NULL.
+ * finding the bucket. Returns the item using the offset if found, else NULL.
  */
 char *
-hashtable_remove(hashtable_T *self, const char *key)
+hashtable_remove(hashtable_T *self, const char *key, uint32_t offset)
 {
     assert(self != NULL);
     assert(key != NULL);
 
-    hash_T hash = hash_get(key);
+    hash_T hash = self->key_size == 0
+                      ? hash_get(key)
+                      : hash_get_len((uint8_t *)key, self->key_size);
     hashbucket_T *bucket = hashtable_lookup(self, key, hash);
 
     if (HB_ISEMPTY(bucket))
@@ -282,7 +288,7 @@ hashtable_remove(hashtable_T *self, const char *key)
 
     hashtable_remove_bucket(self, bucket);
 
-    return item_key;
+    return item_key - offset;
 }
 
 /*

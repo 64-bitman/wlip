@@ -4,6 +4,7 @@
 #include "util.h"
 #include <stddef.h>
 #include <stdlib.h>
+#include <sys/random.h>
 
 void
 setUp(void)
@@ -29,7 +30,7 @@ test_hashtable_basic(void)
 {
     hashtable_T table;
 
-    hashtable_init(&table);
+    hashtable_init(&table, 0);
 
     // Testing adding
     for (int i = 0; i < 200; i++)
@@ -65,7 +66,7 @@ test_hashtable_basic(void)
     for (int i = 0; i < 20; i++)
     {
         wlip_snprintf(buf, 100, "%d", i);
-        char *s = hashtable_remove(&table, buf);
+        char *s = hashtable_remove(&table, buf, 0);
 
         TEST_ASSERT_EQUAL_STRING(buf, s);
 
@@ -85,7 +86,7 @@ test_hashtable_resize(void)
 {
     hashtable_T table;
 
-    hashtable_init(&table);
+    hashtable_init(&table, 0);
 
     for (int i = 0; i < 20000; i++)
     {
@@ -104,7 +105,7 @@ test_hashtable_resize(void)
     {
         char *key = wlip_strdup_printf("%d", i);
 
-        wlip_free(hashtable_remove(&table, key));
+        wlip_free(hashtable_remove(&table, key, 0));
         wlip_free(key);
     }
 
@@ -121,7 +122,7 @@ test_hashtable_iter(void)
 {
     hashtable_T table;
 
-    hashtable_init(&table);
+    hashtable_init(&table, 0);
 
     for (int i = 0; i < 10; i++)
     {
@@ -152,6 +153,33 @@ test_hashtable_iter(void)
     hashtable_clear_all(&table, 0);
 }
 
+/*
+ * Test if hash table works with arbitrary binary keys
+ */
+static void
+test_hashtable_binary(void)
+{
+    hashtable_T table;
+
+    hashtable_init(&table, 16);
+
+    uint8_t buf[16];
+    getrandom(buf, 16, 0);
+
+    hash_T hash = hash_get_len(buf, 16);
+    hashbucket_T *b = hashtable_lookup_bin(&table, buf, hash);
+
+    hashtable_add_bin(&table, b, buf, hash);
+
+    b = hashtable_lookup_bin(&table, buf, hash);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(buf, b->key, 16);
+
+    hashtable_remove_bin(&table, buf, 0);
+    b = hashtable_lookup_bin(&table, buf, hash);
+    TEST_ASSERT_EQUAL_PTR(&TOMBSTONE_MARKER, b->key);
+    hashtable_clear(&table);
+}
+
 int
 main(void)
 {
@@ -160,6 +188,7 @@ main(void)
     RUN_TEST(test_hashtable_basic);
     RUN_TEST(test_hashtable_resize);
     RUN_TEST(test_hashtable_iter);
+    RUN_TEST(test_hashtable_binary);
 
     return UNITY_END();
 }

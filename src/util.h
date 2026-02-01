@@ -68,6 +68,7 @@ typedef unsigned char char_u;
 
 #define OK 0
 #define FAIL -1
+#define NOERROR -2
 
 #define WLIP_JSON_CHECK(func, obj)                                             \
     do                                                                         \
@@ -97,9 +98,10 @@ void wlip_log_raw(
 int64_t get_realtime_us(void);
 int64_t get_montonictime_us(void);
 
-void sha256_hex2digest(const char *str, char_u buf[SHA256_BLOCK_SIZE]);
+const uint8_t *
+sha256_hex2digest(const char *str, uint8_t buf[SHA256_BLOCK_SIZE]);
 const char *
-sha256_digest2hex(const char_u hash[SHA256_BLOCK_SIZE], char buf[65]);
+sha256_digest2hex(const uint8_t hash[SHA256_BLOCK_SIZE], char buf[65]);
 
 int wlip_mkdir(const char *path);
 

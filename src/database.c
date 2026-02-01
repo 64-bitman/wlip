@@ -47,7 +47,7 @@ static const char *DB_SCHEMA =
     "CREATE TABLE IF NOT EXISTS Mime_types ("
     "   Id BLOB(32),"
     "   Mime_type TEXT,"
-    "   Data_id BLOB(32),"
+    "   Data_id BLOB(32) NOT NULL,"
     "   PRIMARY KEY (Id, Mime_type),"
     "   FOREIGN KEY (Id) REFERENCES Entries(Id) ON DELETE CASCADE,"
     "   FOREIGN KEY (Data_id) REFERENCES Data(Data_id) ON DELETE RESTRICT"
@@ -146,14 +146,17 @@ static struct
         .statement = "DELETE FROM Mime_types WHERE Id = ? AND Mime_type = ?;",
     },
     .delete_entry_by_id = {
-        .statement = "DELETE FROM Entries WHERE Id = ?;",
+        .statement =
+            "DELETE FROM Entries WHERE Id = ?"
+            "   RETURNING Id, Creation_time, Starred, Clipboard;",
     },
     .delete_entry_by_index = {
         .statement =
             "WITH target AS ("
             "   SELECT Id FROM Entries WHERE Clipboard = ? "
             "   ORDER BY Creation_time DESC LIMIT 1 OFFSET ?"
-            ") DELETE FROM Entries WHERE Id IN (SELECT Id FROM target);",
+            ") DELETE FROM Entries WHERE Id IN (SELECT Id FROM target)"
+            "     RETURNING Id;",
     },
     .serialize_data = {
         .statement =
@@ -208,57 +211,6 @@ static struct
 
     sqlite3 *handle; // NULL if not initialized
 } DB;
-
-#ifdef TESTING
-// Database is always in memory when testing
-static bool DB_IN_MEMORY = true;
-
-typedef struct
-{
-    clipdata_T *data;
-    char id[65]; // Data id in hexadecimal form
-} memoryfile_T;
-
-hashtable_T MEMORY_STORE;
-
-static void
-memoryfile_free(memoryfile_T *f)
-{
-    assert(f != NULL);
-
-    clipdata_unref(f->data);
-    wlip_free(f);
-}
-
-/*
- * Same as sqlfunc_delete_data_file() but for when database is in memory.
- */
-static void
-sqlfunc_delete_data_file_inmemory(
-    sqlite3_context *ctx, int argc, sqlite3_value **argv
-)
-{
-    if (argc != 1)
-    {
-        sqlite3_result_null(ctx);
-        return;
-    }
-
-    const char *data_id = (const char *)sqlite3_value_text(argv[0]);
-    hash_T hash = hash_get(data_id);
-    hashbucket_T *b = hashtable_lookup(&MEMORY_STORE, data_id, hash);
-
-    if (!HB_ISEMPTY(b))
-    {
-        memoryfile_T *f = HB_GET(b, memoryfile_T, id);
-        memoryfile_free(f);
-        hashtable_remove_bucket(&MEMORY_STORE, b);
-    }
-
-    sqlite3_result_null(ctx);
-}
-
-#endif
 
 /*
  * Removes the corresponding file for the given data id in the data
@@ -357,12 +309,8 @@ database_init()
 
     int flags =
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX;
-#ifdef TESTING
-    if (DB_IN_MEMORY)
-        flags |= SQLITE_OPEN_MEMORY;
-    else
-#endif
-        if (wlip_mkdir(local_dir) == -1 || wlip_mkdir(data_dir) == -1)
+
+    if (wlip_mkdir(local_dir) == -1 || wlip_mkdir(data_dir) == -1)
     {
         wlip_error(
             "Failed creating database directory '%s' and '%s': %s", local_dir,
@@ -417,12 +365,7 @@ database_init()
 
     void (*delete_func)(sqlite3_context *, int, sqlite3_value **);
 
-#ifdef TESTING
-    if (DB_IN_MEMORY)
-        delete_func = sqlfunc_delete_data_file_inmemory;
-    else
-#endif
-        delete_func = sqlfunc_delete_data_file;
+    delete_func = sqlfunc_delete_data_file;
 
     // Create user functions
     if (sqlite3_create_function(
@@ -484,9 +427,6 @@ database_init()
 
     DB.local_dir = wlip_strdup(local_dir);
     DB.data_dir = wlip_strdup(data_dir);
-#ifdef TESTING
-    hashtable_init(&MEMORY_STORE);
-#endif
 
     return OK;
 }
@@ -523,13 +463,6 @@ database_uninit(void)
             statements[i].stmt = NULL;
         }
 
-#ifdef TESTING
-    hashtable_clear_func(
-        &MEMORY_STORE, (hb_freefunc_T)memoryfile_free,
-        offsetof(memoryfile_T, id)
-    );
-#endif
-
     wlip_free(DB.local_dir);
     wlip_free(DB.data_dir);
     sqlite3_close(DB.handle);
@@ -541,31 +474,14 @@ database_uninit(void)
  * table). Returns OK on success and FAIL on failure.
  */
 static void
-create_data_file(clipdata_T *data)
+save_data(clipdata_T *data)
 {
     assert(data != NULL);
 
-    const char *id = sha256_digest2hex(data->id, NULL);
-
-#ifdef TESTING
-    if (DB_IN_MEMORY)
-    {
-        hash_T hash = hash_get(id);
-        hashbucket_T *b = hashtable_lookup(&MEMORY_STORE, id, hash);
-
-        if (HB_ISEMPTY(b))
-        {
-            memoryfile_T *f = wlip_malloc(sizeof(memoryfile_T));
-
-            f->data = clipdata_ref(data);
-            memcpy(f->id, id, 65);
-        }
-        return;
-    }
-#endif
-
+    const char *dataid = sha256_digest2hex(data->id, NULL);
     char path[PATH_MAX];
-    wlip_snprintf(path, PATH_MAX, "%s/%s", DB.data_dir, id);
+
+    wlip_snprintf(path, PATH_MAX, "%s/%s", DB.data_dir, dataid);
 
     // Check if file already exists
     struct stat sb;
@@ -580,8 +496,6 @@ create_data_file(clipdata_T *data)
         wlip_warn("Failed writing to file '%s'", path);
 
     fclose(fp);
-
-    return;
 }
 
 /*
@@ -651,13 +565,11 @@ serialize_mime_types(clipentry_T *entry)
                 return FAIL;
             }
         }
-        else if (mt->data->state != DATA_STATE_LOADED)
-            wlip_warn(
-                "Data '%s' is unloaded?", sha256_digest2hex(mt->data->id, NULL)
-            );
         else
         {
-            create_data_file(mt->data);
+            if (mt->data->state == DATA_STATE_LOADED)
+                save_data(mt->data);
+
             if (database_serialize_data(mt->data) == FAIL)
                 return FAIL;
 
@@ -667,6 +579,9 @@ serialize_mime_types(clipentry_T *entry)
             sqlite3_bind_text(stmt, 2, mt->name, -1, SQLITE_STATIC);
             sqlite3_bind_blob(
                 stmt, 3, mt->data->id, sizeof(mt->data->id), SQLITE_STATIC
+            );
+            sqlite3_bind_blob(
+                stmt, 4, mt->data->id, sizeof(mt->data->id), SQLITE_STATIC
             );
 
             sqlite3_step(stmt);
@@ -802,20 +717,11 @@ fail:
     return FAIL;
 }
 
-/*
- * Return the data for the given data id, which must be passed in digest and in
- * hexadecimal form. Returns NULL on failure.
- */
-clipdata_T *
-database_load_data(
-    const char_u digest[SHA256_BLOCK_SIZE], const char data_id[65]
-)
+static int
+load_data(clipdata_T *data, const char *path)
 {
-    assert(digest != NULL);
-    assert(data_id != NULL);
-
-    char path[PATH_MAX];
-    wlip_snprintf(path, PATH_MAX, "%s/%s", DB.data_dir, data_id);
+    assert(data != NULL);
+    assert(path != NULL);
 
     struct stat sb;
     FILE *fp = NULL;
@@ -828,7 +734,7 @@ database_load_data(
         wlip_warn("Error opening file '%s': %s", path, strerror(errno));
         if (fp != NULL)
             fclose(fp);
-        return NULL;
+        return FAIL;
     }
 
     // Check for overflow
@@ -838,10 +744,8 @@ database_load_data(
             "File '%s' is too large to be loaded (%" PRId64 " bytes)", path,
             size
         );
-        return NULL;
+        return FAIL;
     }
-
-    clipdata_T *data = clipdata_new();
 
     array_grow(&data->content, size);
     fread(data->content.data, 1, size, fp);
@@ -851,16 +755,75 @@ database_load_data(
         wlip_warn("Error reading file '%s': %s", path, strerror(errno));
         clipdata_unref(data);
         fclose(fp);
-        return NULL;
+        return FAIL;
     }
 
     data->content.len = size;
-    data->state = DATA_STATE_LOADED;
-    memcpy(data->id, digest, SHA256_BLOCK_SIZE);
-
     fclose(fp);
 
+    return OK;
+}
+
+/*
+ * Return the data for the given data id, which must be passed in digest and in
+ * hexadecimal form. Returns NULL on failure.
+ */
+clipdata_T *
+database_get_data(
+    const char_u digest[SHA256_BLOCK_SIZE], const char data_id[65]
+)
+{
+    assert(digest != NULL);
+    assert(data_id != NULL);
+    assert(strlen(data_id) == 64);
+
+    // Check if data is already in memory
+    clipdata_T *loaded = clipdata_get(digest);
+
+    if (loaded != NULL)
+    {
+        clipdata_load(loaded);
+        return loaded;
+    }
+
+    char path[PATH_MAX];
+    wlip_snprintf(path, PATH_MAX, "%s/%s", DB.data_dir, data_id);
+
+    clipdata_T *data = clipdata_new();
+
+    if (load_data(data, path) == FAIL)
+    {
+        clipdata_unref(data);
+        return NULL;
+    }
+    memcpy(data->id, digest, SHA256_BLOCK_SIZE);
+
+    data->state = DATA_STATE_LOADED;
+    clipdata_export(data);
+
     return data;
+}
+
+/*
+ * Load the data, which should in the unloaded state. Returns OK on success and
+ * FAIL on failure.
+ */
+int
+database_load_data(clipdata_T *data)
+{
+    assert(data != NULL);
+    assert(data->state == DATA_STATE_UNLOADED);
+
+    const char *data_id = sha256_digest2hex(data->id, NULL);
+    char path[PATH_MAX];
+    wlip_snprintf(path, PATH_MAX, "%s/%s", DB.data_dir, data_id);
+
+    if (load_data(data, path) == FAIL)
+        return FAIL;
+
+    data->state = DATA_STATE_LOADED;
+    clipdata_export(data);
+    return OK;
 }
 
 /*
@@ -884,7 +847,7 @@ deserialize_mime_types(clipentry_T *entry)
         if (ret == SQLITE_ROW)
         {
             const char *mime_type = (const char *)sqlite3_column_text(stmt, 0);
-            const char_u *data_id = sqlite3_column_blob(stmt, 1);
+            const uint8_t *data_id = sqlite3_column_blob(stmt, 1);
 
             if (sqlite3_column_bytes(stmt, 1) != SHA256_BLOCK_SIZE)
             {
@@ -893,13 +856,15 @@ deserialize_mime_types(clipentry_T *entry)
                 return FAIL;
             }
 
-            clipdata_T *data =
-                database_load_data(data_id, sha256_digest2hex(data_id, NULL));
+            // Check if data is already in memory
+            clipdata_T *data = clipdata_get(data_id);
 
             if (data == NULL)
             {
-                sqlite3_reset(stmt);
-                return FAIL;
+                data = clipdata_new();
+
+                memcpy(data->id, data_id, SHA256_BLOCK_SIZE);
+                clipdata_export(data);
             }
 
             mimetype_T *mt = mimetype_new(mime_type, data);
@@ -1016,6 +981,13 @@ deserialize_entry(clipboard_T *cb, sqlite3_stmt *stmt)
         wlip_warn("Entry id is not of length 32 bytes?");
         return NULL;
     }
+
+    clipentry_T *loaded = clipentry_get(id);
+
+    // Check if entry already is loaded
+    if (loaded != NULL)
+        return loaded;
+
     if (cb == NULL)
     {
         const char *clipboard = (const char *)sqlite3_column_text(stmt, 3);
@@ -1055,6 +1027,9 @@ deserialize_entry(clipboard_T *cb, sqlite3_stmt *stmt)
  * entries and "func" for each entry. Note that the entry is not freed after
  * "func" is called. Caller must ensure "start" and "num" are greater or equal
  * to zero. Returns OK on success and FAIL on failure.
+ *
+ * The data in the mime types will not be loaded, so they must be laoded before
+ * use.
  */
 int
 database_deserialize(
@@ -1161,15 +1136,21 @@ database_deserialize_id(const char_u buf[SHA256_BLOCK_SIZE])
     DO_TRANSACTION(begin_transaction, NULL);
 
     sqlite3_stmt *stmt = STATEMENTS.deserialize_entry_with_id.stmt;
+    int ret;
 
     assert(!sqlite3_stmt_busy(stmt));
     sqlite3_bind_blob(stmt, 1, buf, SHA256_BLOCK_SIZE, SQLITE_STATIC);
 
-    if (sqlite3_step(stmt) != SQLITE_ROW)
+    ret = sqlite3_step(stmt);
+    if (ret != SQLITE_ROW)
     {
-        wlip_warn(
-            "Failed deserializing entry by id: %s", sqlite3_errmsg(DB.handle)
-        );
+        if (ret == SQLITE_DONE)
+            wlip_warn("Entry does not exist in database");
+        else
+            wlip_warn(
+                "Failed deserializing entry by id: %s",
+                sqlite3_errmsg(DB.handle)
+            );
         goto fail;
     }
 
@@ -1186,6 +1167,101 @@ fail:
     sqlite3_reset(stmt);
     DO_TRANSACTION(rollback_transaction, NULL);
     return NULL;
+}
+
+/*
+ * Delete the nth entry in the database for clipboard. If entry was deleted,
+ * then OK is returned, if it didn't exist, then NOERROR is returned, otherwise
+ * FAIL is returned on error. If the entry exists, then its id is copied into
+ * "idbuf".
+ */
+int
+database_delete_idx(
+    clipboard_T *cb, int64_t idx, char_u idbuf[SHA256_BLOCK_SIZE]
+)
+{
+    assert(cb != NULL);
+    assert(idx >= 0);
+    assert(idbuf != NULL);
+
+    if (database_init() == FAIL)
+        return FAIL;
+
+    sqlite3_stmt *stmt = STATEMENTS.delete_entry_by_index.stmt;
+
+    assert(!sqlite3_stmt_busy(stmt));
+    sqlite3_bind_text(stmt, 1, cb->name, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, idx);
+
+    int res = sqlite3_step(stmt);
+    int ret = OK;
+
+    if (res == SQLITE_DONE)
+        ret = NOERROR;
+    else if (res == SQLITE_ROW)
+    {
+        const char_u *id = sqlite3_column_blob(stmt, 0);
+
+        if (sqlite3_column_bytes(stmt, 0) != SHA256_BLOCK_SIZE)
+        {
+            wlip_warn("Entry id is not of length 32 bytes?");
+            return FAIL;
+        }
+        memcpy(idbuf, id, SHA256_BLOCK_SIZE);
+        ret = OK;
+    }
+    else
+    {
+        wlip_debug("Failed deleting entry: %s", sqlite3_errmsg(DB.handle));
+        ret = FAIL;
+    }
+
+    sqlite3_reset(stmt);
+    return ret;
+}
+
+/*
+ * Same as database_delete_idx() but entry is put in "store".
+ */
+int
+database_delete_id(char_u id[SHA256_BLOCK_SIZE], clipentry_T **store)
+{
+    assert(id != NULL);
+    assert(store != NULL);
+
+    if (database_init() == FAIL)
+        return FAIL;
+
+    sqlite3_stmt *stmt = STATEMENTS.delete_entry_by_id.stmt;
+
+    assert(!sqlite3_stmt_busy(stmt));
+    sqlite3_bind_blob(stmt, 1, id, SHA256_BLOCK_SIZE, SQLITE_STATIC);
+
+    int res = sqlite3_step(stmt);
+    int ret = OK;
+
+    if (res == SQLITE_DONE)
+        ret = NOERROR;
+    else if (res == SQLITE_ROW)
+    {
+        clipentry_T *entry = deserialize_entry(NULL, stmt);
+
+        if (entry == NULL)
+            ret = FAIL;
+        else
+        {
+            *store = entry;
+            ret = OK;
+        }
+    }
+    else
+    {
+        wlip_debug("Failed deleting entry: %s", sqlite3_errmsg(DB.handle));
+        ret = FAIL;
+    }
+
+    sqlite3_reset(stmt);
+    return ret;
 }
 
 // vim: ts=4 sw=4 sts=4 et

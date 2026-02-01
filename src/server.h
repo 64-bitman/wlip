@@ -12,7 +12,7 @@ typedef struct
     const char *name;
     struct json_object *args; // May be NULL if there are no arguments
     int64_t serial;
-    char_u *binary; // NULL if there is no binary data attached
+    uint8_t *binary; // NULL if there is no binary data attached
     uint32_t binary_len;
     connection_T *ct; // Internal use
 } command_T;

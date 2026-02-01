@@ -780,10 +780,12 @@ process_data(connection_T *ct)
     if (json_object_object_get_ex(root, "size", &j_size) &&
         json_object_is_type(j_size, json_type_int))
     {
-        ct->binary_remaining = json_object_get_int64(j_size);
+        int64_t sz = json_object_get_int64(j_size);
 
-        if (ct->binary_remaining > 0)
+        // Check for overflow as well
+        if (sz <= UINT32_MAX && sz > 0)
         {
+            ct->binary_remaining = sz;
             ct->binary = true;
             ct->saved = root;
             array_init(&ct->binary_data, 1, 256);

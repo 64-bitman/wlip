@@ -15,6 +15,20 @@
 // Table that holds all defined clipboards.
 static hashtable_T CLIPBOARDS;
 
+// Table of all currently loaded entries
+static hashtable_T ENTRIES;
+
+// Table of all data objects that have been exported
+static hashtable_T DATA;
+
+void
+init_clipboards(void)
+{
+    hashtable_init(&CLIPBOARDS, 0);
+    hashtable_init(&ENTRIES, SHA256_BLOCK_SIZE);
+    hashtable_init(&DATA, SHA256_BLOCK_SIZE);
+}
+
 /*
  * Allocate a new clipboard named "name" and add it to the global table. If the
  * name is invalid or clipboard with same name already exists, then NULL is
@@ -24,10 +38,6 @@ clipboard_T *
 clipboard_new(const char *name)
 {
     assert(name != NULL);
-
-    // Initialize global table if we haven't.
-    if (CLIPBOARDS.buckets == NULL)
-        hashtable_init(&CLIPBOARDS);
 
     uint32_t name_len = STRLEN(name);
     hash_T hash = hash_get(name);
@@ -81,7 +91,8 @@ clipboard_new(const char *name)
 static void
 lua_func_unref(void *ptr)
 {
-    luaL_unref(WLUA_L, LUA_REGISTRYINDEX, *(int *)ptr);
+    if (WLUA_L != NULL)
+        luaL_unref(WLUA_L, LUA_REGISTRYINDEX, *(int *)ptr);
 }
 
 static void free_receive_context(clipboard_receivectx_T *ctx);
@@ -115,7 +126,86 @@ free_clipboards(void)
     hashtable_clear_func(
         &CLIPBOARDS, (hb_freefunc_T)clipboard_free, offsetof(clipboard_T, name)
     );
-    memset(&CLIPBOARDS, 0, sizeof(CLIPBOARDS));
+    hashtable_clear(&ENTRIES);
+    hashtable_clear(&DATA);
+}
+
+static bool
+delete_check_clipboard(clipboard_T *cb, char_u id[SHA256_BLOCK_SIZE])
+{
+    if (cb->entry != NULL && memcmp(id, cb->entry->id, SHA256_BLOCK_SIZE) == 0)
+    {
+        if (cb->no_database)
+            clipboard_set(cb, NULL);
+        else
+            clipboard_load(cb, 0);
+        clipboard_sync(cb, NULL);
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Delete the nth entry in the clipboard from history. If there is no nth entry,
+ * then nothing is done. If the entry deleted is loaded in the clipboard, then
+ * the entry before it is used. Returns OK on success and FAIL on failure.
+ */
+int
+clipboard_delete_entry(clipboard_T *cb, int64_t n)
+{
+    assert(cb != NULL);
+    assert(n >= 0);
+
+    if (cb->no_database)
+    {
+        if (n == 0 && cb->entry != NULL)
+        {
+            clipboard_set(cb, NULL);
+            clipboard_sync(cb, NULL);
+        }
+        return OK;
+    }
+
+    char_u id[SHA256_BLOCK_SIZE];
+    int ret = database_delete_idx(cb, n, id);
+
+    if (ret == FAIL)
+        return FAIL;
+    else if (ret == NOERROR)
+        return OK;
+
+    // Check if the entry we deleted is same as the one loaded in clipboard.
+    delete_check_clipboard(cb, id);
+
+    return OK;
+}
+
+/*
+ * Delete the entry with the given id. Returns OK on success (even if ID doesn't
+ * exist), and FAIL on failure. Clipboard is updated if entry is same as one
+ * loaded in clipboard.
+ */
+int
+clipboard_delete_id(uint8_t id[SHA256_BLOCK_SIZE])
+{
+    assert(id != NULL);
+
+    clipentry_T *deleted;
+    int ret = database_delete_id(id, &deleted);
+
+    if (ret == NOERROR)
+        // Clipboards may not have a database backend, so check if its loaded.
+        deleted = clipentry_get(id);
+
+    if (ret != FAIL && deleted != NULL)
+    {
+        delete_check_clipboard(deleted->clipboard, deleted->id);
+        clipentry_unref(deleted);
+    }
+    else
+        return FAIL;
+
+    return OK;
 }
 
 /*
@@ -384,24 +474,42 @@ receive_check_cb(int fd, int revents, void *udata)
             hashbucket_T *b =
                 hashtable_lookup(&ctx->entry->mime_types, mime_type, hash);
 
-            // We may have duplicate mime types. In this case just update the
-            // mime type.
-            if (!HB_ISEMPTY(b))
-            {
-                mimetype_T *mt = HB_GET(b, mimetype_T, name);
-                clipdata_unref(mt->data);
-                mt->data = ctx->data; // Transfer ownership
+            uint8_t id[SHA256_BLOCK_SIZE];
+            sha256_final(&ctx->sha, id);
+            clipdata_T *loaded = clipdata_get(id);
 
-                hashtable_replace(&ctx->entry->mime_types, b, mt->name, hash);
+            // Check if data is already exported
+            if (likely(loaded != NULL))
+            {
+                clipdata_unref(ctx->data);
+                ctx->data = loaded;
             }
             else
             {
-                mimetype_T *mt = mimetype_new(mime_type, ctx->data);
-                hashtable_add(&ctx->entry->mime_types, b, mt->name, hash);
+                ctx->data->state = DATA_STATE_LOADED;
+                memcpy(ctx->data->id, id, SHA256_BLOCK_SIZE);
+                clipdata_export(ctx->data);
             }
 
-            sha256_final(&ctx->sha, ctx->data->id);
-            ctx->data->state = DATA_STATE_LOADED;
+            mimetype_T *mt;
+
+            // We may have duplicate mime types. In this case just update the
+            // mime type (only if data is different).
+            if (!HB_ISEMPTY(b))
+            {
+                mt = HB_GET(b, mimetype_T, name);
+
+                if (mt->data != ctx->data)
+                {
+                    clipdata_unref(mt->data);
+                    mt->data = ctx->data; // Transfer ownership
+                }
+            }
+            else
+            {
+                mt = mimetype_new(mime_type, ctx->data);
+                hashtable_add(&ctx->entry->mime_types, b, mt->name, hash);
+            }
 
             ctx->data = NULL;
             close(fd);
@@ -504,7 +612,7 @@ clipboard_push_selection(
 /*
  * Same as database_deserialize(), but if the clipboard has no database (no
  * history), then the currently stored entry is returned. Returns OK on success
- * and FAIL on failure.
+ * and FAIL on failure. Note that the mime type data may not be loaded.
  */
 int
 clipboard_get_entries(
@@ -525,6 +633,61 @@ clipboard_get_entries(
     }
 
     return database_deserialize(start, num, cb, func, udata);
+}
+
+/*
+ * Same as clipboard_get_entries(), but returns the nth entry. If the entry is
+ * already loaded, then a new reference to it is returned. Returns OK on success
+ * and FAIL on failure.
+ */
+int
+clipboard_get_entry(clipboard_T *cb, int64_t n, clipentry_T **store)
+{
+    assert(cb != NULL);
+    assert(store != NULL);
+
+    if (n < 0)
+        return FAIL;
+
+    if (cb->no_database && n == 0)
+    {
+        *store = cb->entry == NULL ? NULL : clipentry_ref(cb->entry);
+        return OK;
+    }
+
+    // database_deserialize_index() checks if the entry is loaded already
+    clipentry_T *entry = database_deserialize_index(n, cb);
+
+    if (entry == NULL)
+        return FAIL;
+
+    *store = entry;
+    return OK;
+}
+
+/*
+ * Same as clipboard_get_entry(), but use an ID instead. If the entry is already
+ * loaded, then a new reference to it is returned.
+ */
+int
+clipboard_get_id(uint8_t id[SHA256_BLOCK_SIZE], clipentry_T **store)
+{
+    assert(id != NULL);
+    assert(store != NULL);
+
+    // Check if entry is already loaded
+    clipentry_T *entry = clipentry_get(id);
+
+    if (entry != NULL)
+        return OK;
+
+    entry = database_deserialize_id(id);
+
+    if (entry == NULL)
+        return FAIL;
+
+    *store = entry;
+    return OK;
 }
 
 /*
@@ -557,7 +720,7 @@ get_clipboards(void)
  * NULL, then the ID and creation time is automatically generated.
  */
 clipentry_T *
-clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb)
+clipentry_new(const uint8_t id[SHA256_BLOCK_SIZE], clipboard_T *cb)
 {
     assert(cb != NULL);
 
@@ -581,16 +744,72 @@ clipentry_new(const char_u id[SHA256_BLOCK_SIZE], clipboard_T *cb)
     entry->clipboard = cb;
     entry->refcount = 1;
 
-    hashtable_init(&entry->attributes);
-    hashtable_init(&entry->mime_types);
+    hashtable_init(&entry->attributes, 0);
+    hashtable_init(&entry->mime_types, 0);
+
+    // Add it to global table
+    hash_T hash = hash_get_len(entry->id, SHA256_BLOCK_SIZE);
+    hashbucket_T *b = hashtable_lookup_bin(&ENTRIES, entry->id, hash);
+
+    if (HB_ISEMPTY(b))
+        hashtable_add_bin(&ENTRIES, b, entry->id, hash);
+    else
+        // Shouldn't happen, always check if entry is loaded before creating a
+        // new one.
+        wlip_warn("Entry with same id is already loaded");
+    entry->hash = hash;
 
     return entry;
+}
+
+/*
+ * Should be called when entry is modified, will serialize the entry into the
+ * database if allowed to. If the clipboard is currently set to the entry, then
+ * the clipboard is synced and updated. Returns OK on success and FAIL on
+ * failure.
+ */
+int
+clipentry_update(clipentry_T *entry)
+{
+    assert(entry != NULL);
+
+    int res = OK;
+
+    if (!entry->clipboard->no_database)
+        res = database_serialize(entry);
+
+    if (entry->clipboard->entry == entry)
+        clipboard_sync(entry->clipboard, NULL);
+    return res;
+}
+
+/*
+ * Return an entry with the same ID that is already loaded, else NULL. Returns
+ * a new reference.
+ */
+clipentry_T *
+clipentry_get(const uint8_t id[SHA256_BLOCK_SIZE])
+{
+    assert(id != NULL);
+
+    hash_T hash = hash_get_len(id, SHA256_BLOCK_SIZE);
+    hashbucket_T *b = hashtable_lookup_bin(&ENTRIES, id, hash);
+
+    if (HB_ISEMPTY(b))
+        return NULL;
+    return clipentry_ref(HB_GET(b, clipentry_T, id));
 }
 
 static void
 clipentry_free(clipentry_T *entry)
 {
     assert(entry != NULL);
+
+    hashbucket_T *b = hashtable_lookup_bin(&ENTRIES, entry->id, entry->hash);
+    if (!HB_ISEMPTY(b))
+        hashtable_remove_bucket(&ENTRIES, b);
+    else
+        wlip_warn("Entry isn't in global table?");
 
     hashtable_clear_func(
         &entry->attributes, (hb_freefunc_T)attribute_free,
@@ -630,7 +849,7 @@ attribute_new(const char *name)
 {
     assert(name != NULL);
 
-    attribute_T *attr = wlip_malloc(sizeof(attribute_T) + STRLEN(name));
+    attribute_T *attr = wlip_calloc(1, sizeof(attribute_T) + STRLEN(name));
 
     sprintf(attr->name, "%s", name);
 
@@ -655,14 +874,79 @@ clipdata_new(void)
 
     array_init(&data->content, 1, 512);
     data->state = DATA_STATE_UNLOADED;
+    data->exported = false;
     data->refcount = 1;
     return data;
+}
+
+/*
+ * Return a clipdata_T with the same ID that is already exported, else NULL.
+ * Returns a new reference.
+ */
+clipdata_T *
+clipdata_get(const uint8_t id[SHA256_BLOCK_SIZE])
+{
+    assert(id != NULL);
+
+    hash_T hash = hash_get_len(id, SHA256_BLOCK_SIZE);
+    hashbucket_T *b = hashtable_lookup_bin(&DATA, id, hash);
+
+    if (HB_ISEMPTY(b))
+        return NULL;
+    return clipdata_ref(HB_GET(b, clipdata_T, id));
+}
+
+/*
+ * Add the clipdata_T to the global table. "data->id" should already be set.
+ */
+void
+clipdata_export(clipdata_T *data)
+{
+    assert(data != NULL);
+
+    hash_T hash = hash_get_len(data->id, SHA256_BLOCK_SIZE);
+    hashbucket_T *b = hashtable_lookup_bin(&DATA, data->id, hash);
+
+    if (HB_ISEMPTY(b))
+        hashtable_add_bin(&DATA, b, data->id, hash);
+    else
+        // Shouldn't happen, always check if data is loaded before creating a
+        // new loaded one.
+        wlip_warn("Data with same id is already exported");
+    data->hash = hash;
+    data->exported = true;
+}
+
+/*
+ * If the data isn't loaded, then load it. Returns OK on success and FAIL on
+ * failure.
+ */
+int
+clipdata_load(clipdata_T *data)
+{
+    assert(data != NULL);
+
+    if (data->state == DATA_STATE_LOADED)
+        return OK;
+
+    assert(data->content.data == NULL);
+
+    return database_load_data(data);
 }
 
 static void
 clipdata_free(clipdata_T *data)
 {
     assert(data != NULL);
+
+    if (data->exported)
+    {
+        hashbucket_T *b = hashtable_lookup_bin(&DATA, data->id, data->hash);
+        if (!HB_ISEMPTY(b))
+            hashtable_remove_bucket(&DATA, b);
+        else
+            wlip_warn("Data object isn't in global table?");
+    }
 
     array_clear(&data->content);
     wlip_free(data);

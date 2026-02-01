@@ -97,8 +97,8 @@ hex2byte(char c)
  * bytes) into "buf". If "buf" is NULL, then a static memory buffer is used, and
  * it is assumed to be invalid on the next function call.
  */
-void
-sha256_hex2digest(const char *str, char_u buf[SHA256_BLOCK_SIZE])
+const uint8_t *
+sha256_hex2digest(const char *str, uint8_t buf[SHA256_BLOCK_SIZE])
 {
     assert(STRLEN(str) == 64);
 
@@ -114,6 +114,7 @@ sha256_hex2digest(const char *str, char_u buf[SHA256_BLOCK_SIZE])
 
         buf[i] = (char_u)((hi << 4) | lo);
     }
+    return buf;
 }
 
 /*
@@ -122,7 +123,7 @@ sha256_hex2digest(const char *str, char_u buf[SHA256_BLOCK_SIZE])
  * next function call.
  */
 const char *
-sha256_digest2hex(const char_u hash[SHA256_BLOCK_SIZE], char buf[65])
+sha256_digest2hex(const uint8_t hash[SHA256_BLOCK_SIZE], char buf[65])
 {
     assert(hash != NULL);
 

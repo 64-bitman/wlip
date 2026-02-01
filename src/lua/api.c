@@ -16,25 +16,27 @@
 static int
 module_wlip_add_clipboard(lua_State *L)
 {
-    luaL_checktype(L, 2, LUA_TTABLE);
-
     const char *name = luaL_checkstring(L, 1);
-    int64_t max_entries;
-    bool no_database;
+    int64_t max_entries = -1;
+    bool no_database = false;
 
-    // Get options from table
+    // Get options from table (if provided)
 
-    // opts["max_entries"]
-    lua_getfield(L, 2, "max_entries");
-    max_entries = luaL_optinteger(L, -1, -1);
-    lua_pop(L, 1);
+    if (!lua_isnone(L, 2))
+    {
+        luaL_checktype(L, 2, LUA_TTABLE);
+        // opts["max_entries"]
+        lua_getfield(L, 2, "max_entries");
+        max_entries = luaL_optinteger(L, -1, -1);
+        lua_pop(L, 1);
 
-    assert(lua_type(L, 2) == LUA_TTABLE);
+        assert(lua_type(L, 2) == LUA_TTABLE);
 
-    // opts["no_database"]
-    lua_getfield(L, 2, "no_database");
-    no_database = lua_toboolean(L, -1);
-    lua_pop(L, 1);
+        // opts["no_database"]
+        lua_getfield(L, 2, "no_database");
+        no_database = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+    }
 
     clipboard_T *cb = clipboard_new(name);
 

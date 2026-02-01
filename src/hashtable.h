@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,6 +35,8 @@ typedef struct
     uint32_t tombstones_len; // Number of tombstones
     uint32_t alloc_len;      // Allocated length, always a power of 2
     bool no_resize;          // Don't resize when removing, adding.
+    uint32_t key_size;       // If all keys have a fixed size, then set here,
+                             // otherwise zero.
 } hashtable_T;
 
 // Struct to iterate through a hash table
@@ -49,22 +52,26 @@ typedef struct
 #define HASHTABLEITER_INIT(ht) {ht, 0, 0}
 
 hash_T hash_get(const char *key);
+hash_T hash_get_len(const uint8_t *key, uint32_t len);
 
-void hashtable_init(hashtable_T *self);
+void hashtable_init(hashtable_T *self, uint32_t key_size);
 void hashtable_clear(hashtable_T *self);
 void hashtable_clear_all(hashtable_T *self, uint32_t offset);
 void
 hashtable_clear_func(hashtable_T *self, hb_freefunc_T func, uint32_t offset);
 
 hashbucket_T *hashtable_lookup(hashtable_T *self, const char *key, hash_T hash);
+#define hashtable_lookup_bin(self, key, hash)                                  \
+    hashtable_lookup(self, (char *)(key), hash)
 void *hashtable_find(hashtable_T *self, const char *key, uint32_t offset);
 void
 hashtable_add(hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash);
-void hashtable_replace(
-    hashtable_T *self, hashbucket_T *bucket, char *key, hash_T hash
-);
+#define hashtable_add_bin(self, bucket, key, hash)                             \
+    hashtable_add(self, bucket, (char *)(key), hash)
 void hashtable_remove_bucket(hashtable_T *self, hashbucket_T *bucket);
-char *hashtable_remove(hashtable_T *self, const char *key);
+char *hashtable_remove(hashtable_T *self, const char *key, uint32_t offset);
+#define hashtable_remove_bin(self, key, offset)                                \
+    hashtable_remove(self, (char *)(key), offset)
 void hashtable_remove_all(hashtable_T *self, uint32_t offset);
 
 void hashtableiter_init(hashtableiter_T *self, hashtable_T *ht);

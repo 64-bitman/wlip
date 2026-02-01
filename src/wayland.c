@@ -339,7 +339,7 @@ wlseat_new(struct wl_seat *proxy, uint32_t name)
     seat->regular.type = WLSELECTION_TYPE_REGULAR;
     seat->primary.type = WLSELECTION_TYPE_PRIMARY;
     seat->refcount = 1;
-    hashtable_init(&seat->mime_types);
+    hashtable_init(&seat->mime_types, 0);
 }
 
 /*
@@ -384,12 +384,19 @@ wlseat_start(wlseat_T *seat)
 }
 
 /*
- * Get the wlseat_T with the given name. Return NULL if it doesn't exist.
+ * Get the wlseat_T with the given name. Return NULL if it doesn't exist. If
+ * "name" is NULL, then get the first found seat.
  */
 wlseat_T *
 wayland_get_seat(const char *name)
 {
-    assert(name != NULL);
+    if (name == NULL)
+    {
+        hashtableiter_T iter = HASHTABLEITER_INIT(&CONNECTION.globals.seats);
+        wlseat_T *seat = hashtableiter_next(&iter, offsetof(wlseat_T, name));
+
+        return seat;
+    }
 
     hashbucket_T *b =
         hashtable_lookup(&CONNECTION.globals.seats, name, hash_get(name));
@@ -583,7 +590,7 @@ wayland_init(void)
     CONNECTION.registry = wl_display_get_registry(CONNECTION.display);
     CONNECTION.protocol = DATA_PROTOCOL_NONE;
 
-    hashtable_init(&CONNECTION.globals.seats);
+    hashtable_init(&CONNECTION.globals.seats, 0);
 
     wl_registry_add_listener(CONNECTION.registry, &registry_listener, NULL);
     wl_display_roundtrip(CONNECTION.display);
@@ -746,7 +753,8 @@ source_listener_event_send(wlselection_T *sel, const char *mime_type, int fd)
             offsetof(mimetype_T, name)
         );
 
-        if (mt != NULL)
+        // If data is not loaded, then load it now.
+        if (mt != NULL && mt->data != NULL && clipdata_load(mt->data) == OK)
         {
             sendctx_T *ctx = wlip_malloc(sizeof(sendctx_T));
 
@@ -1151,7 +1159,7 @@ device_listener_event_finished(wlseat_T *seat)
     );
 
     // Remove seat from global table
-    hashtable_remove(&CONNECTION.globals.seats, seat->name);
+    hashtable_remove(&CONNECTION.globals.seats, seat->name, 0);
     wlseat_mark_invalid(seat);
 }
 static void

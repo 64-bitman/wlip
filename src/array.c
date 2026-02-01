@@ -164,4 +164,19 @@ array_add(array_T *self, const void *data, uint32_t len)
     self->len += len;
 }
 
+/*
+ * Set the contents of the array to "data". Array must not be allocated.
+ */
+void
+array_take(array_T *self, void *data, uint32_t len)
+{
+    assert(self != NULL);
+    assert(self->data == NULL);
+    assert(data != NULL);
+
+    self->data = data;
+    self->alloc_len = len;
+    self->len = len;
+}
+
 // vim: ts=4 sw=4 sts=4 et

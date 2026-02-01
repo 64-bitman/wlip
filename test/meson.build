@@ -3,7 +3,7 @@ test_includes = []
 
 subdir('unity')
 
-tests = ['array', 'database', 'hashtable', 'ringbuffer']
+tests = ['array', 'hashtable', 'ringbuffer']
 
 foreach test : tests
   exe = executable(

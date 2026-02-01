@@ -11,14 +11,15 @@
 
 /*
  * 'clipboard:attach(seat, selection)' - Attach a Wayland selection to the
- * clipboard. Returns true if successful.
+ * clipboard. Returns true if successful. If "seat" is nil, then use the first
+ * found seat.
  */
 static int
 method_attach(lua_State *L)
 {
     clipboard_T *cb =
         *(clipboard_T **)luaL_checkudata(L, 1, WLUA_USERDATA_CLIPBOARD);
-    const char *seat_name = luaL_checkstring(L, 2);
+    const char *seat_name = lua_isnil(L, 2) ? NULL : luaL_checkstring(L, 2);
     const char *selection_name = luaL_checkstring(L, 3);
     wlselection_type_T type;
 
@@ -175,7 +176,7 @@ wlua_clipboard_emit_selection_start(clipboard_T *cb, hashtable_T *mime_types)
             }
             const char *mime = lua_tostring(L, -1);
 
-            wlip_free(hashtable_remove(mime_types, mime));
+            wlip_free(hashtable_remove(mime_types, mime, 0));
             lua_pop(L, 1);
         }
         lua_pop(L, 1);
