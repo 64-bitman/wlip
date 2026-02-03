@@ -45,7 +45,7 @@ struct message_S
     connection_T *ct;
     bool popped;
 
-    char_u data[1]; // Actually longer
+    uint8_t data[1]; // Actually longer
 };
 
 #define BUFFER_SIZE 256
@@ -58,7 +58,7 @@ struct connection_S
     int fd;
 
     // Ring buffer that stores incoming data.
-    char_u buf[BUFFER_SIZE];
+    uint8_t buf[BUFFER_SIZE];
     ringbuffer_T rb;
 
     // Stores binary data that may come after the JSON message.
@@ -213,14 +213,27 @@ server_init(void)
     else
     {
         const char *display = getenv("WAYLAND_DISPLAY");
-        char runtime[PATH_MAX];
         const char *xdgruntime = getenv("XDG_RUNTIME_DIR");
+        const char *socketdir_env = getenv("WLIP_SOCKDIR");
+        char socketdir[PATH_MAX];
 
         assert(display != NULL);
-        if (xdgruntime == NULL)
-            wlip_snprintf(runtime, PATH_MAX, "/tmp");
+
+        if (socketdir_env != NULL)
+            wlip_snprintf(socketdir, PATH_MAX, "%s", socketdir_env);
+        else if (xdgruntime != NULL)
+            wlip_snprintf(socketdir, PATH_MAX, "%s", xdgruntime);
         else
-            wlip_snprintf(runtime, PATH_MAX, "%s", xdgruntime);
+            wlip_snprintf(socketdir, PATH_MAX, "/tmp");
+
+        // Check if directory exists
+        struct stat sb;
+
+        if (stat(socketdir, &sb) == -1 || !S_ISDIR(sb.st_mode))
+        {
+            wlip_error("Socket directory '%s' does not ecist", socketdir);
+            goto fail;
+        }
 
         if (strrchr(display, '/') != NULL)
             display = strrchr(display, '/');
@@ -233,7 +246,7 @@ server_init(void)
         for (int i = 0; i < 1000; i++)
         {
             wlip_snprintf(
-                socket_path, PATH_MAX, "%s/wlip.%s.%d", runtime, display, i
+                socket_path, PATH_MAX, "%s/wlip.%s.%d", socketdir, display, i
             );
             wlip_snprintf(lock_path, PATH_MAX, "%s.lock", socket_path);
 
@@ -544,7 +557,7 @@ connection_try_send(connection_T *ct)
 void
 command_send_reply(
     command_T *cmd, bool success, struct json_object *ret,
-    const char_u *binary_data, uint32_t binary_len
+    const uint8_t *binary_data, uint32_t binary_len
 )
 {
     assert(cmd != NULL);
@@ -606,7 +619,7 @@ command_send_reply(
  */
 static void
 do_command(
-    connection_T *ct, struct json_object *root, char_u *binary_data,
+    connection_T *ct, struct json_object *root, uint8_t *binary_data,
     uint32_t binary_len
 )
 {
@@ -657,7 +670,7 @@ try_read_binary_data(connection_T *ct)
     if (!ct->binary)
         return 0;
 
-    const char_u *region1, *region2;
+    const uint8_t *region1, *region2;
     uint32_t len1 = 0, len2 = 0;
 
     ringbuffer_get(&ct->rb, &region1, &len1, &region2, &len2);
@@ -703,7 +716,7 @@ process_data(connection_T *ct)
     if (try_read_binary_data(ct) == -1)
         return true;
 
-    const char_u *region1, *region2;
+    const uint8_t *region1, *region2;
     uint32_t len1, len2;
 
     ringbuffer_get(&ct->rb, &region1, &len1, &region2, &len2);
@@ -717,7 +730,7 @@ process_data(connection_T *ct)
 
     // Find newline if any, otherwise assume message is incomplete (wait for
     // more data).
-    char_u *nl = memchr(region1, '\n', len1);
+    uint8_t *nl = memchr(region1, '\n', len1);
 
     if (nl == NULL)
     {

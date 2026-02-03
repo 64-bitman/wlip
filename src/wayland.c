@@ -708,7 +708,7 @@ send_check_cb(int fd, int revents, void *udata)
 
     if (revents & POLLOUT)
     {
-        char_u *buf = (char_u *)ctx->data->content.data + ctx->w;
+        uint8_t *buf = (uint8_t *)ctx->data->content.data + ctx->w;
 
         ssize_t w = write(fd, buf, ctx->data->content.len - ctx->w);
 

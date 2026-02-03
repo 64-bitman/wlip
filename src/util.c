@@ -80,7 +80,7 @@ get_montonictime_us(void)
     return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
-static inline char_u
+static inline uint8_t
 hex2byte(char c)
 {
     if ('0' <= c && c <= '9')
@@ -102,17 +102,17 @@ sha256_hex2digest(const char *str, uint8_t buf[SHA256_BLOCK_SIZE])
 {
     assert(STRLEN(str) == 64);
 
-    static char_u sbuf[SHA256_BLOCK_SIZE];
+    static uint8_t sbuf[SHA256_BLOCK_SIZE];
 
     if (buf == NULL)
         buf = sbuf;
 
     for (int i = 0; i < SHA256_BLOCK_SIZE; i++)
     {
-        char_u hi = hex2byte(str[2 * i]);
-        char_u lo = hex2byte(str[2 * i + 1]);
+        uint8_t hi = hex2byte(str[2 * i]);
+        uint8_t lo = hex2byte(str[2 * i + 1]);
 
-        buf[i] = (char_u)((hi << 4) | lo);
+        buf[i] = (uint8_t)((hi << 4) | lo);
     }
     return buf;
 }

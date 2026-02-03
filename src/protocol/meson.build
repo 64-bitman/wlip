@@ -10,11 +10,18 @@ foreach protocol : protocols
   name = protocol
   xml = name + '.xml'
 
-  header = custom_target(
+  client_header = custom_target(
     name + ' client header',
     input: xml,
     output: name + '.h',
     command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@']
+  )
+
+  server_header = custom_target(
+    name + ' server header',
+    input: xml,
+    output: name + '_server.h',
+    command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@']
   )
 
   code = custom_target(
@@ -24,5 +31,6 @@ foreach protocol : protocols
     command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@']
   )
 
-  sources += [header, code]
+  sources += [client_header, code]
+  test_comp_sources += [server_header, code]
 endforeach

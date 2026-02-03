@@ -29,7 +29,7 @@ test_ringbuffer_read(void)
     ringbuffer_T rb;
 
     fcntl(r_fd, F_SETFL, fcntl(r_fd, F_GETFL, 0) | O_NONBLOCK);
-    ringbuffer_init(&rb, (char_u *)buf, 16);
+    ringbuffer_init(&rb, (uint8_t *)buf, 16);
 
     dprintf(
         w_fd, "Hello world! One, Two, Three, Four, Five, Six, Seven, Eight, "
@@ -42,7 +42,7 @@ test_ringbuffer_read(void)
     ringbuffer_read(&rb, r_fd);
     TEST_ASSERT_EQUAL_STRING("Hello world! On", buf);
     ringbuffer_get(
-        &rb, (const char_u **)&region1, &len1, (const char_u **)&region2, &len2
+        &rb, (const uint8_t **)&region1, &len1, (const uint8_t **)&region2, &len2
     );
     TEST_ASSERT_EQUAL_STRING("Hello world! On", region1);
     TEST_ASSERT_NULL(region2);
@@ -50,7 +50,7 @@ test_ringbuffer_read(void)
 
     ringbuffer_consume(&rb, 10);
     ringbuffer_get(
-        &rb, (const char_u **)&region1, &len1, (const char_u **)&region2, &len2
+        &rb, (const uint8_t **)&region1, &len1, (const uint8_t **)&region2, &len2
     );
     TEST_ASSERT_EQUAL_STRING("d! On", region1);
     TEST_ASSERT_NULL(region2);
@@ -58,14 +58,14 @@ test_ringbuffer_read(void)
     ringbuffer_read(&rb, r_fd);
     TEST_ASSERT_EQUAL_STRING("e, Two, Thd! On", buf);
     ringbuffer_get(
-        &rb, (const char_u **)&region1, &len1, (const char_u **)&region2, &len2
+        &rb, (const uint8_t **)&region1, &len1, (const uint8_t **)&region2, &len2
     );
     TEST_ASSERT_EQUAL_STRING("d! On", region1);
     TEST_ASSERT_EQUAL_STRING_LEN("e, Two, Th", region2, 10);
 
     ringbuffer_consume(&rb, 100);
     ringbuffer_get(
-        &rb, (const char_u **)&region1, &len1, (const char_u **)&region2, &len2
+        &rb, (const uint8_t **)&region1, &len1, (const uint8_t **)&region2, &len2
     );
     TEST_ASSERT_NULL(region1);
     TEST_ASSERT_NULL(region2);

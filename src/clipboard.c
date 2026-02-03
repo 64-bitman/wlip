@@ -131,7 +131,7 @@ free_clipboards(void)
 }
 
 static bool
-delete_check_clipboard(clipboard_T *cb, char_u id[SHA256_BLOCK_SIZE])
+delete_check_clipboard(clipboard_T *cb, uint8_t id[SHA256_BLOCK_SIZE])
 {
     if (cb->entry != NULL && memcmp(id, cb->entry->id, SHA256_BLOCK_SIZE) == 0)
     {
@@ -166,7 +166,7 @@ clipboard_delete_entry(clipboard_T *cb, int64_t n)
         return OK;
     }
 
-    char_u id[SHA256_BLOCK_SIZE];
+    uint8_t id[SHA256_BLOCK_SIZE];
     int ret = database_delete_idx(cb, n, id);
 
     if (ret == FAIL)
@@ -459,7 +459,7 @@ receive_check_cb(int fd, int revents, void *udata)
         }
 
         ssize_t r = read(
-            fd, (char_u *)ctx->data->content.data + ctx->data->content.len, 512
+            fd, (uint8_t *)ctx->data->content.data + ctx->data->content.len, 512
         );
 
         if (r == -1)
@@ -733,8 +733,8 @@ clipentry_new(const uint8_t id[SHA256_BLOCK_SIZE], clipboard_T *cb)
 
         // ID is just the clipboard name and the current time hashed together.
         sha256_init(&ctx);
-        sha256_update(&ctx, (char_u *)cb->name, cb->name_len);
-        sha256_update(&ctx, (char_u *)&time, sizeof(time));
+        sha256_update(&ctx, (uint8_t *)cb->name, cb->name_len);
+        sha256_update(&ctx, (uint8_t *)&time, sizeof(time));
         sha256_final(&ctx, entry->id);
         entry->creation_time = time;
     }

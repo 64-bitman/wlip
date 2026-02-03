@@ -4,7 +4,6 @@
 #include "database.h"
 #include "hashtable.h"
 #include "sha256.h"
-#include "util.h"
 #include "wayland.h"
 
 typedef enum
@@ -21,7 +20,7 @@ struct clipdata_S
 {
     int refcount;
     hash_T hash; // Cached
-    char_u id[SHA256_BLOCK_SIZE];
+    uint8_t id[SHA256_BLOCK_SIZE];
     array_T content;
     data_state_T state;
     bool exported;
@@ -68,7 +67,7 @@ struct clipentry_S
 {
     int refcount;
 
-    char_u id[SHA256_BLOCK_SIZE];
+    uint8_t id[SHA256_BLOCK_SIZE];
     hash_T hash; // Cached
 
     int64_t creation_time; // In microseconds

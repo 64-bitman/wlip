@@ -9,9 +9,6 @@
 #include <stdio.h>  // IWYU pragma: keep
 #include <string.h> // IWYU pragma: keep
 
-typedef unsigned int uint;
-typedef unsigned char char_u;
-
 #define NUL 0
 
 #ifndef MIN

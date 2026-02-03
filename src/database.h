@@ -1,6 +1,6 @@
 #pragma once
 
-#include "util.h"
+#include "sha256.h"
 #include <stdint.h>
 
 typedef struct clipboard_S clipboard_T;
@@ -14,7 +14,7 @@ void database_uninit(void);
 
 int database_serialize(clipentry_T *entry);
 clipdata_T *database_get_data(
-    const char_u digest[SHA256_BLOCK_SIZE], const char data_id[65]
+    const uint8_t digest[SHA256_BLOCK_SIZE], const char data_id[65]
 );
 int database_load_data(clipdata_T *data);
 int database_deserialize(
@@ -22,11 +22,11 @@ int database_deserialize(
     void *udata
 );
 clipentry_T *database_deserialize_index(int64_t idx, clipboard_T *cb);
-clipentry_T *database_deserialize_id(const char_u buf[SHA256_BLOCK_SIZE]);
+clipentry_T *database_deserialize_id(const uint8_t buf[SHA256_BLOCK_SIZE]);
 
 int database_delete_idx(
-    clipboard_T *cb, int64_t idx, char_u idbuf[SHA256_BLOCK_SIZE]
+    clipboard_T *cb, int64_t idx, uint8_t idbuf[SHA256_BLOCK_SIZE]
 );
-int database_delete_id(char_u id[SHA256_BLOCK_SIZE], clipentry_T **store);
+int database_delete_id(uint8_t id[SHA256_BLOCK_SIZE], clipentry_T **store);
 
 // vim: ts=4 sw=4 sts=4 et

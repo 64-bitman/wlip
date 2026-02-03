@@ -8,7 +8,7 @@
  * of 2 and the actual usable size will be minus one byte.
  */
 void
-ringbuffer_init(ringbuffer_T *rb, char_u *buf, uint32_t size)
+ringbuffer_init(ringbuffer_T *rb, uint8_t *buf, uint32_t size)
 {
     assert(rb != NULL);
     assert(buf != NULL);
@@ -83,8 +83,8 @@ ringbuffer_read(ringbuffer_T *rb, int fd)
  */
 void
 ringbuffer_get(
-    ringbuffer_T *rb, const char_u **region1, uint32_t *len1,
-    const char_u **region2, uint32_t *len2
+    ringbuffer_T *rb, const uint8_t **region1, uint32_t *len1,
+    const uint8_t **region2, uint32_t *len2
 )
 {
     assert(rb != NULL);

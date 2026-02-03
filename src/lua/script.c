@@ -34,10 +34,13 @@ execute_config(void)
     // Configuration directories to use, in ascending priority.
     static char config_dirs[2][PATH_MAX];
 
+    const char *env = getenv("WLIP_CONFIG");
     const char *xdgconfighome = getenv("XDG_CONFIG_HOME");
     const char *home = getenv("HOME");
 
-    if (xdgconfighome != NULL)
+    if (env != NULL)
+        wlip_snprintf(config_dirs[0], PATH_MAX, "%s", env);
+    else if (xdgconfighome != NULL)
         wlip_snprintf(config_dirs[0], PATH_MAX, "%s/wlip", xdgconfighome);
     else if (home != NULL)
         wlip_snprintf(config_dirs[0], PATH_MAX, "%s/.config/wlip", home);
