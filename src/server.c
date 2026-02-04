@@ -2,6 +2,7 @@
 #include "alloc.h"
 #include "array.h"
 #include "event.h"
+#include "json_util.h"
 #include "ringbuffer.h"
 #include "server_api.h"
 #include <assert.h>
@@ -44,6 +45,7 @@ struct message_S
     message_T *next;
     connection_T *ct;
     bool popped;
+    eventfd_T fdsource;
 
     uint8_t data[1]; // Actually longer
 };
@@ -76,6 +78,8 @@ struct connection_S
 
     bool sending; // true if we are writing a message to the connection
 
+    eventfd_T fdsource;
+
     connection_T *next;
 };
 
@@ -92,8 +96,6 @@ static struct
     // Linked list of all open connections
     connection_T *connections;
 } SERVER;
-
-static bool socket_check_cb(int fd, int revents, void *udata);
 
 /*
  * Create a lock file at the given path, and store its file descriptor in
@@ -308,12 +310,16 @@ server_init(void)
     SERVER.connections = NULL;
     SERVER.running = true;
 
-    event_add_fd(SERVER.sock_fd, POLLIN, 0, NULL, socket_check_cb, NULL);
-
     return OK;
 fail:
     close(fd);
     return FAIL;
+}
+
+int
+server_get_fd(void)
+{
+    return SERVER.sock_fd;
 }
 
 static void connection_remove(connection_T *ct);
@@ -324,9 +330,7 @@ server_uninit(void)
     unlink(SERVER.socket_path);
     unlink(SERVER.lock_path);
     close(SERVER.lock_fd);
-
-    close(SERVER.sock_fd); // Redundant but eh...
-    event_remove_fd(SERVER.sock_fd);
+    close(SERVER.sock_fd);
 
     wlip_free(SERVER.socket_path);
     wlip_free(SERVER.lock_path);
@@ -410,11 +414,7 @@ add_connection(int fd)
     ct->tokener = json_tokener_new();
     ringbuffer_init(&ct->rb, ct->buf, BUFFER_SIZE);
 
-    if (ct->tokener == NULL)
-    {
-        fprintf(stderr, "json_tokener_new() fail: %s\n", strerror(errno));
-        abort();
-    }
+    WLIP_JSON_CHECK(json_tokener_new, ct->tokener);
 
     if (SERVER.connections == NULL)
         SERVER.connections = ct;
@@ -462,6 +462,7 @@ connection_remove(connection_T *ct)
     if (cur->saved != NULL)
         json_object_put(cur->saved);
     array_clear(&cur->binary_data);
+    event_remove((eventsource_T *)&ct->fdsource);
     close(cur->fd);
     wlip_free(cur);
 }
@@ -484,40 +485,44 @@ connection_unref(connection_T *ct)
 
 static void connection_try_send(connection_T *ct);
 
-static bool
-message_check_cb(int fd, int revents, void *udata)
+static void
+message_check_cb(eventsource_T *source)
 {
-    message_T *msg = udata;
+    eventfd_T *fdsource = (eventfd_T *)source;
+    message_T *msg = source->udata;
 
-    if (revents == 0)
-        return false;
-    else if (revents & POLLOUT)
+    if (fdsource->revents == 0)
+        return;
+    else if (fdsource->revents & POLLOUT)
     {
-        ssize_t w =
-            write(fd, msg->data + (msg->size - msg->remaining), msg->remaining);
+        ssize_t w = write(
+            fdsource->fd, msg->data + (msg->size - msg->remaining),
+            msg->remaining
+        );
 
         if (w == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
-            return false;
+            return;
         else if (w >= 0)
         {
             msg->remaining -= w;
             if (msg->remaining > 0)
-                return false;
+                return;
             else
             {
                 msg->ct->sending = false;
 
                 // Check the next message in the queue
                 connection_try_send(msg->ct);
+                event_remove((eventsource_T *)&msg->fdsource);
                 message_free(msg);
-                return true;
+                return;
             }
         }
     }
     // Connection lost
-    message_free(msg);
     msg->ct->sending = false;
-    return true;
+    event_remove((eventsource_T *)&msg->fdsource);
+    message_free(msg);
 }
 
 /*
@@ -536,7 +541,7 @@ connection_try_send(connection_T *ct)
     ct->sending = true;
     message_T *msg = message_pop(ct);
 
-    event_add_fd(ct->fd, POLLOUT, 0, NULL, message_check_cb, msg);
+    event_add_fd(&msg->fdsource, ct->fd, POLLOUT, message_check_cb, msg);
 }
 
 /*
@@ -818,18 +823,19 @@ process_data(connection_T *ct)
 /*
  * Called when there is stuff to be read in the socket connection.
  */
-static bool
-connection_check_cb(int fd, int revents, void *udata)
+static void
+connection_check_cb(eventsource_T *source)
 {
-    connection_T *ct = udata;
+    eventfd_T *fdsource = (eventfd_T *)source;
+    connection_T *ct = source->udata;
 
-    if (revents == 0)
-        return false;
-    else if (!(revents & POLLIN))
+    if (fdsource->revents == 0)
+        return;
+    else if (!(fdsource->revents & POLLIN))
         // Connection closed.
         goto close;
 
-    ssize_t ret = ringbuffer_read(&ct->rb, fd);
+    ssize_t ret = ringbuffer_read(&ct->rb, fdsource->fd);
 
     if (ret == 0 || ret == -1)
         // Assume connection is closed. Note that if "ret" is 0, then it only
@@ -846,54 +852,40 @@ connection_check_cb(int fd, int revents, void *udata)
 
     (void)message_append;
 
-    return false;
+    return;
 close:
     connection_unref(ct);
-    return true;
 }
 
 /*
  * Called when there is a new client
  */
-static bool
-socket_check_cb(int fd, int revents, void *udata UNUSED)
+void
+server_check_cb(int revents)
 {
     if (revents == 0)
-        return false;
+        return;
     else if (!(revents & POLLIN))
     {
         wlip_debug("Error polling server socket");
         server_uninit();
-        return true;
+        return;
     }
 
     // Accept and create new connection
-    int ct_fd = accept(fd, NULL, NULL);
+    int ct_fd = accept(SERVER.sock_fd, NULL, NULL);
 
     if (ct_fd == -1)
     {
         wlip_warn("Failed accepting client: %s", strerror(errno));
-        return false;
+        return;
     }
 
     // Make fd non blocking
     fcntl(ct_fd, F_SETFL, fcntl(ct_fd, F_GETFL, 0) | O_NONBLOCK);
-
     connection_T *ct = add_connection(ct_fd);
-    event_add_fd(ct_fd, POLLIN, 0, NULL, connection_check_cb, ct);
-    return false;
+
+    event_add_fd(&ct->fdsource, ct_fd, POLLIN, connection_check_cb, ct);
 }
-
-/* static int */
-/* compare_command_name(const void *key, const void *member) */
-/* { */
-/*     return strcmp(key, ((command_T *)member)->name); */
-/* } */
-
-/* const char *command = json_string_value(j_command); */
-/* command_T *cmd = bsearch( */
-/*     command, COMMANDS, ARRAY_SIZE(COMMANDS), sizeof(command_T), */
-/*     compare_command_name */
-/* ); */
 
 // vim: ts=4 sw=4 sts=4 et

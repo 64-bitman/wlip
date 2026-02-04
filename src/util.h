@@ -2,7 +2,6 @@
 
 #include "sha256.h"
 #include <errno.h>
-#include <json.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,7 +27,7 @@
     {                                                                          \
         if (snprintf(b, s, f, ##__VA_ARGS__) < 0)                              \
         {                                                                      \
-            wlip_error("snprintf(...) failed: %s", strerror(errno));           \
+            wlip_error("snprintf(...) failed: %s", strerror(errno));      \
             abort();                                                           \
         }                                                                      \
     } while (false)
@@ -67,16 +66,6 @@
 #define FAIL -1
 #define NOERROR -2
 
-#define WLIP_JSON_CHECK(func, obj)                                             \
-    do                                                                         \
-    {                                                                          \
-        if (obj == NULL)                                                       \
-        {                                                                      \
-            wlip_error(STRINGIFY(func) "() fail: %s\n", strerror(errno));      \
-            abort();                                                           \
-        }                                                                      \
-    } while (false)
-
 #define wlip_log(fmt, ...)                                                     \
     wlip_log_raw(false, "", __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 #define wlip_debug(fmt, ...)                                                   \
@@ -94,6 +83,8 @@ void wlip_log_raw(
 
 int64_t get_realtime_us(void);
 int64_t get_montonictime_us(void);
+struct timespec timespec_subtract(struct timespec start, struct timespec end);
+int timespec_compare(struct timespec a, struct timespec b);
 
 const uint8_t *
 sha256_hex2digest(const char *str, uint8_t buf[SHA256_BLOCK_SIZE]);
@@ -101,7 +92,5 @@ const char *
 sha256_digest2hex(const uint8_t hash[SHA256_BLOCK_SIZE], char buf[65]);
 
 int wlip_mkdir(const char *path);
-
-struct json_object *construct_json_object(const char *fmt, ...);
 
 // vim: ts=4 sw=4 sts=4 et

@@ -419,6 +419,7 @@ free_receive_context(clipboard_receivectx_T *ctx)
     if (ctx->entry->clipboard->recv_ctx == ctx)
         ctx->entry->clipboard->recv_ctx = NULL;
 
+    event_remove((eventsource_T *)&ctx->fdsource);
     wlselection_unref(ctx->sel);
     clipentry_unref(ctx->entry);
     hashtable_clear_all(&ctx->mime_types, 0);
@@ -428,10 +429,11 @@ free_receive_context(clipboard_receivectx_T *ctx)
     wlip_free(ctx);
 }
 
-static bool
-receive_check_cb(int fd, int revents, void *udata)
+static void
+receive_check_cb(eventsource_T *source)
 {
-    clipboard_receivectx_T *ctx = udata;
+    eventfd_T *fdsource = (eventfd_T *)source;
+    clipboard_receivectx_T *ctx = source->udata;
 
     // Check if we have been cancelled
     if (ctx->cancelled)
@@ -442,7 +444,7 @@ receive_check_cb(int fd, int revents, void *udata)
 
     // POLLHUP only indicates that the sender has closed their end, not that
     // there is no data in the pipe.
-    if (revents & (POLLIN | POLLHUP))
+    if (fdsource->revents & (POLLIN | POLLHUP))
     {
         char *mime_type = hashtableiter_current(&ctx->iter, 0);
 
@@ -459,13 +461,14 @@ receive_check_cb(int fd, int revents, void *udata)
         }
 
         ssize_t r = read(
-            fd, (uint8_t *)ctx->data->content.data + ctx->data->content.len, 512
+            fdsource->fd,
+            (uint8_t *)ctx->data->content.data + ctx->data->content.len, 512
         );
 
         if (r == -1)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return false;
+                return;
         }
         else if (r == 0)
         {
@@ -512,7 +515,8 @@ receive_check_cb(int fd, int revents, void *udata)
             }
 
             ctx->data = NULL;
-            close(fd);
+            event_remove((eventsource_T *)fdsource);
+            close(fdsource->fd);
 
             int next_fd = get_next_mimetype(ctx->sel, &ctx->iter);
 
@@ -532,9 +536,11 @@ receive_check_cb(int fd, int revents, void *udata)
             {
                 ctx->fd = next_fd;
                 sha256_init(&ctx->sha);
-                event_add_fd(next_fd, POLLIN, 0, NULL, receive_check_cb, ctx);
+                event_add_fd(
+                    fdsource, next_fd, POLLIN, receive_check_cb, ctx
+                );
             }
-            return true;
+            return;
         }
         else
         {
@@ -542,18 +548,17 @@ receive_check_cb(int fd, int revents, void *udata)
                 &ctx->sha, ctx->data->content.data + ctx->data->content.len, r
             );
             ctx->data->content.len += r;
-            return false;
+            return;
         }
     }
-    else if (revents & (POLLERR | POLLNVAL))
+    else if (fdsource->revents & (POLLERR | POLLNVAL))
         wlip_warn("Error occured while receiving mime type contents");
     else
         // Nothing happened
-        return false;
+        return;
 
 exit:
     free_receive_context(ctx);
-    return true;
 }
 
 /*
@@ -597,7 +602,9 @@ clipboard_push_selection(
             sha256_init(&ctx->sha);
 
             cb->recv_ctx = ctx;
-            event_add_fd(fd, POLLIN, 0, NULL, receive_check_cb, ctx);
+            event_add_fd(
+                &ctx->fdsource, fd, POLLIN, receive_check_cb, ctx
+            );
             return;
         }
         wlip_free(ctx);

@@ -4,27 +4,54 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Called before polling the file descriptors. If true is removed, then the
-// source is removed from the event loop. Note that this is not guaranteed to be
-// called with the "check" callback after, specifically when a signal interrupts
-// ppoll().
-typedef bool (*eventprepare_func_T)(int fd, void *udata);
+typedef enum
+{
+    EVENTSOURCE_TYPE_FD,
+    EVENTSOURCE_TYPE_TIMER
+} eventsource_type_T;
 
-// Called after polling the file descriptors. If true is removed, then the
-// source is removed from the event loop
-typedef bool (*eventcheck_func_T)(int fd, int revents, void *udata);
+typedef struct eventsource_S eventsource_T;
 
-// Called when the timer is triggered. If true is removed, then the timer is
-// removed from the event loop
-typedef bool (*eventtimer_func_T)(void *udata);
+// Called when an event source is triggered.
+typedef void (*eventsource_func_T)(eventsource_T *source);
+// Base event source struct type
+struct eventsource_S
+{
+    eventsource_type_T type;
 
-void event_run();
-void event_stop(void);
+    eventsource_func_T func;
+    void *udata;
+
+    eventsource_T *next;
+    eventsource_T *prev;
+};
+
+// Event source for a file descriptor
+typedef struct
+{
+    eventsource_T base;
+
+    int fd;
+    int events;
+    int revents;
+} eventfd_T;
+
+typedef struct
+{
+    eventsource_T base;
+
+    // In milliseconds
+    int interval;
+    int remaining;
+} eventtimer_T;
+
+void event_run(void);
+void event_remove(eventsource_T *source);
 
 void event_add_fd(
-    int fd, int events, int priority, eventprepare_func_T prepare,
-    eventcheck_func_T check, void *udata
+    eventfd_T *fdsource, int fd, int events, eventsource_func_T func,
+    void *udata
 );
-void event_remove_fd(int fd);
-int event_add_timer(int interval, eventtimer_func_T func, void *udata);
-bool event_remove_timer(uint32_t id);
+void event_add_timer(
+    eventtimer_T *timer, int interval, eventsource_func_T func, void *udata
+);

@@ -443,11 +443,6 @@ database_uninit(void)
     if (DB.handle == NULL)
         return;
 
-    wlip_debug("Database statistics:");
-    wlip_debug(
-        "Current memory usage: %" PRId64, (int64_t)sqlite3_memory_used()
-    );
-
     preparedstmt_T *statements = (preparedstmt_T *)&STATEMENTS;
 
     // Free each prepared statement

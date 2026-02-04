@@ -119,7 +119,8 @@ typedef struct wlselection_S
         void *dummy;
     } offer;
 
-    int null_timer_id; // 0 if not set
+    eventtimer_T null_timer;
+    bool timer_running;
 
     bool ignore_next_null; // If next selection event should be ignored (if it
                            // is NULL).
@@ -460,6 +461,7 @@ wlseat_destroy(wlseat_T *seat)
     else
         wl_seat_destroy(seat->proxy);
 
+    event_remove((eventsource_T *)&seat->regular.null_timer);
     hashtable_clear_all(&seat->mime_types, 0);
     wlip_free(seat);
 }
@@ -503,21 +505,24 @@ wlseat_mark_invalid(wlseat_T *seat)
     assert(seat != NULL);
 
     seat->started = false;
-    if (seat->regular.null_timer_id != 0)
+    if (seat->regular.timer_running)
     {
-        event_remove_timer(seat->regular.null_timer_id);
+        event_remove((eventsource_T *)&seat->regular.null_timer);
         wlseat_unref(seat);
     }
-    if (seat->primary.null_timer_id != 0)
+    if (seat->primary.timer_running)
     {
-        event_remove_timer(seat->primary.null_timer_id);
+        event_remove((eventsource_T *)&seat->primary.null_timer);
         wlseat_unref(seat);
     }
     wlseat_unref(seat);
 }
 
-static bool
-prepare_cb(int fd UNUSED, void *udata UNUSED)
+/*
+ * Prepare to read the display fd. Returns true if connection is lost.
+ */
+bool
+wayland_prepare(void)
 {
     if (!CONNECTION.reading)
     {
@@ -532,14 +537,16 @@ prepare_cb(int fd UNUSED, void *udata UNUSED)
     {
         // Wayland connection lost, exit.
         wlip_debug("Wayland display connection lost, exiting...");
-        exit(EXIT_SUCCESS);
+        return true;
     }
-
     return false;
 }
 
-static bool
-check_cb(int fd UNUSED, int revents, void *udata UNUSED)
+/*
+ * Eead the display fd and dispatch events. Returns true if connection is lost.
+ */
+bool
+wayland_check(int revents)
 {
     CONNECTION.reading = false;
     if (revents & POLLIN)
@@ -549,18 +556,17 @@ check_cb(int fd UNUSED, int revents, void *udata UNUSED)
         {
             // Wayland connection lost, exit.
             wlip_debug("Wayland display connection lost, exiting...");
-            exit(EXIT_SUCCESS);
+            return true;
         }
     }
     else if (revents & (POLLERR | POLLHUP | POLLNVAL))
     {
         // Wayland connection lost, exit.
         wlip_debug("Wayland display connection lost, exiting...");
-        exit(EXIT_SUCCESS);
+        return true;
     }
     else
         wl_display_cancel_read(CONNECTION.display);
-
     return false;
 }
 
@@ -594,15 +600,15 @@ wayland_init(void)
 
     wl_registry_add_listener(CONNECTION.registry, &registry_listener, NULL);
     wl_display_roundtrip(CONNECTION.display);
-
-    // Add display to event loop (make sure it has the highest priority so it is
-    // always called first).
-    event_add_fd(
-        wl_display_get_fd(CONNECTION.display), POLLIN, INT_MIN, prepare_cb,
-        check_cb, NULL
-    );
-
     return OK;
+}
+
+int
+wayland_get_fd(void)
+{
+    assert(CONNECTION.display != NULL);
+
+    return wl_display_get_fd(CONNECTION.display);
 }
 
 void
@@ -610,9 +616,6 @@ wayland_uninit(void)
 {
     if (CONNECTION.display == NULL)
         return;
-
-    // Not needed but I think its good practice to do
-    event_remove_fd(wl_display_get_fd(CONNECTION.display));
 
     if (CONNECTION.protocol == DATA_PROTOCOL_EXT)
         ext_data_control_manager_v1_destroy(CONNECTION.globals.dac.ext);
@@ -697,44 +700,46 @@ registry_listener_event_global_remove(
 
 typedef struct
 {
+    eventfd_T fdsource;
     clipdata_T *data;
     uint32_t w; // Number of bytes written so far
 } sendctx_T;
 
-static bool
-send_check_cb(int fd, int revents, void *udata)
+static void
+send_check_cb(eventsource_T *source)
 {
-    sendctx_T *ctx = udata;
+    eventfd_T *fdsource = (eventfd_T *)source;
+    sendctx_T *ctx = source->udata;
 
-    if (revents & POLLOUT)
+    if (fdsource->revents & POLLOUT)
     {
         uint8_t *buf = (uint8_t *)ctx->data->content.data + ctx->w;
 
-        ssize_t w = write(fd, buf, ctx->data->content.len - ctx->w);
+        ssize_t w = write(fdsource->fd, buf, ctx->data->content.len - ctx->w);
 
         if (w == -1)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return false;
+                return;
             wlip_warn("Error writing mime type contents: %s", strerror(errno));
         }
         else
         {
             ctx->w += w;
             if (ctx->w < ctx->data->content.len)
-                return false;
+                return;
         }
     }
-    else if (revents == 0)
-        return false;
+    else if (fdsource->revents == 0)
+        return;
     else
         wlip_warn("Error occured while sending mime type contents");
 
     // Error occured or finished sending all data
     clipdata_unref(ctx->data);
     wlip_free(ctx);
-    close(fd);
-    return true;
+    close(fdsource->fd);
+    event_remove((eventsource_T *)&ctx->fdsource);
 }
 
 /*
@@ -763,7 +768,7 @@ source_listener_event_send(wlselection_T *sel, const char *mime_type, int fd)
 
             // Make fd non-blocking
             fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-            event_add_fd(fd, POLLOUT, 0, NULL, send_check_cb, ctx);
+            event_add_fd(&ctx->fdsource, fd, POLLOUT, send_check_cb, ctx);
             return;
         }
     }
@@ -1020,10 +1025,10 @@ wlr_device_listener_event_data_offer(
     zwlr_data_control_offer_v1_add_listener(offer, &wlr_offer_listener, data);
 }
 
-static bool
-null_delay_cb(void *udata)
+static void
+null_delay_cb(eventsource_T *source)
 {
-    wlselection_T *sel = udata;
+    wlselection_T *sel = source->udata;
 
     if (sel->offer.dummy == NULL)
     {
@@ -1033,9 +1038,9 @@ null_delay_cb(void *udata)
     else
         wlip_debug("NULL selection event is invalid");
 
-    sel->null_timer_id = 0;
+    sel->timer_running = false;
+    event_remove((eventsource_T *)&sel->null_timer);
     wlseat_unref(sel->seat);
-    return true;
 }
 
 /*
@@ -1065,11 +1070,11 @@ device_listener_event_xselection(
         }
     }
 
-    if (sel->null_timer_id != 0)
+    if (sel->timer_running)
     {
-        event_remove_timer(sel->null_timer_id);
+        event_remove((eventsource_T *)&sel->null_timer);
         wlseat_unref(sel->seat);
-        sel->null_timer_id = 0;
+        sel->timer_running = false;
     }
 
     wlip_debug("Received %s selection for seat '%s'", sel_str, seat->name);
@@ -1103,7 +1108,7 @@ device_listener_event_xselection(
 
         // Must add reference since seat may become invalid during the wait.
         wlseat_ref(seat);
-        sel->null_timer_id = event_add_timer(1, null_delay_cb, sel);
+        event_add_timer(&sel->null_timer, 1, null_delay_cb, sel);
     }
     else
     {

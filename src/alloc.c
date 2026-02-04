@@ -18,7 +18,7 @@ wlip_malloc(size_t sz)
 
     if (unlikely(ptr == NULL))
     {
-        fprintf(stderr, "malloc(%zu) fail: %s\n", sz, strerror(errno));
+        wlip_error("malloc(%zu) fail: %s\n", sz, strerror(errno));
         abort();
     }
 
@@ -35,8 +35,8 @@ wlip_calloc(size_t n, size_t n_size)
 
     if (unlikely(ptr == NULL))
     {
-        fprintf(
-            stderr, "calloc(%zu, %zu) fail: %s\n", n, n_size, strerror(errno)
+        wlip_error(
+            "calloc(%zu, %zu) fail: %s\n", n, n_size, strerror(errno)
         );
         abort();
     }
@@ -63,8 +63,8 @@ wlip_realloc(void *ptr, size_t new_size)
 
     if (unlikely(new == NULL))
     {
-        fprintf(
-            stderr, "realloc(..., %zu) fail: %s\n", new_size, strerror(errno)
+        wlip_error(
+            "realloc(..., %zu) fail: %s\n", new_size, strerror(errno)
         );
         abort();
     }
@@ -84,7 +84,7 @@ wlip_strdup(const char *str)
 
     if (unlikely(ptr == NULL))
     {
-        fprintf(stderr, "strdup(\"%s\") fail: %s\n", str, strerror(errno));
+        wlip_error("strdup(\"%s\") fail: %s\n", str, strerror(errno));
         abort();
     }
 

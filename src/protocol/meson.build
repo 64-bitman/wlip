@@ -31,6 +31,6 @@ foreach protocol : protocols
     command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@']
   )
 
-  sources += [client_header, code]
-  test_comp_sources += [server_header, code]
+  wl_sources += [client_header, code]
+  comp_sources += [server_header, code]
 endforeach

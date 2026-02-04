@@ -12,7 +12,12 @@ add_project_arguments(
   language: 'c'
 )
 
-sources = []
+clip_sources = []
+server_sources = []
+util_sources = []
+wl_sources = []
+comp_sources = []
+
 includes = []
 
 sqlite_dep = dependency('sqlite3', version: '>=3.35.0')
@@ -32,7 +37,10 @@ version_h = vcs_tag(
 wlip = executable(
   'wlip',
   'src/main.c',
-  sources,
+  clip_sources,
+  server_sources,
+  util_sources,
+  wl_sources,
   version_h,
   include_directories: includes,
   dependencies: [sqlite_dep, wl_dep, jsonc_dep, lua_dep],

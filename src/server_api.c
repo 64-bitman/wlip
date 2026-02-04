@@ -1,5 +1,6 @@
 #include "server_api.h"
 #include "alloc.h"
+#include "json_util.h"
 #include "clipboard.h"
 #include "hashtable.h"
 #include "server.h"

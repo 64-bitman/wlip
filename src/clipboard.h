@@ -2,6 +2,7 @@
 
 #include "array.h"
 #include "database.h"
+#include "event.h"
 #include "hashtable.h"
 #include "sha256.h"
 #include "wayland.h"
@@ -95,6 +96,7 @@ typedef struct
     wlselection_T *sel;
     SHA256_CTX sha;
     bool cancelled;
+    eventfd_T fdsource;
 } clipboard_receivectx_T;
 
 // Max selections that can be synced per clipboard

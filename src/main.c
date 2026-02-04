@@ -6,6 +6,7 @@
 #include "version.h"
 #include "wayland.h"
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -58,6 +59,15 @@ main(int argc, char *argv[])
         wlip_error("$WAYLAND_DISPLAY is not set");
         return FAIL;
     }
+
+    // Block SIGINT and SIGTERM, only catch them in the event loop.
+    sigset_t block;
+
+    sigemptyset(&block);
+
+    sigaddset(&block, SIGINT);
+    sigaddset(&block, SIGTERM);
+    sigprocmask(SIG_BLOCK, &block, NULL);
 
     init_clipboards();
     if (wayland_init() == FAIL || server_init() == FAIL || lua_init() == FAIL)

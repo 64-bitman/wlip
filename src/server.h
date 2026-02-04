@@ -18,11 +18,14 @@ typedef struct
 } command_T;
 
 int server_init(void);
+int server_get_fd(void);
 void server_uninit(void);
 
 void command_send_reply(
     command_T *cmd, bool success, struct json_object *ret,
     const uint8_t *binary_data, uint32_t binary_len
 );
+
+void server_check_cb(int revents);
 
 // vim: ts=4 sw=4 sts=4 et

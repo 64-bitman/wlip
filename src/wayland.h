@@ -13,7 +13,10 @@ typedef struct wlselection_S wlselection_T;
 typedef struct wlseat_S wlseat_T;
 typedef struct clipboard_S clipboard_T;
 
+bool wayland_prepare(void);
+bool wayland_check(int revents);
 int wayland_init(void);
+int wayland_get_fd(void);
 void wayland_uninit();
 
 wlseat_T *wayland_get_seat(const char *name);

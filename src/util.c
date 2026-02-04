@@ -2,7 +2,6 @@
 #include "sha256.h"
 #include <assert.h>
 #include <errno.h>
-#include <json.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -52,29 +51,29 @@ get_realtime_us(void)
 
     if (clock_gettime(CLOCK_REALTIME, &ts) == -1)
     {
-        wlip_log(
+        wlip_error(
             "clock_gettime(CLOCK_MONOTONIC, ...) error: %s", strerror(errno)
         );
-        return 0;
+        abort();
     }
 
     return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
 /*
- * Get monotonic time in microseconds
+ * Get monotonic time in microseoncds.
  */
 int64_t
 get_montonictime_us(void)
 {
-    struct timespec ts;
+    struct timespec ts = {0};
 
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
     {
-        wlip_log(
+        wlip_error(
             "clock_gettime(CLOCK_MONOTONIC, ...) error: %s", strerror(errno)
         );
-        return 0;
+        abort();
     }
 
     return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
@@ -210,77 +209,4 @@ wlip_mkdir(const char *path)
 out:
     free(_path);
     return result;
-}
-
-/*
- * Construct a JSON object using the variadic arguments. "format" can have the
- * follwing specifiers:
- *
- * "s": string (ownership not taken)
- * "i": integer
- * "b": boolean
- * "j": struct json_object * (ownership is taken)
- *
- * The variadic arguments should be in the format of:
- * <name>, <value>
- *
- * For strings:
- * <name>, <string>, <uint32_t len>
- *
- * Note that all keys must be unique
- */
-struct json_object *
-construct_json_object(const char *fmt, ...)
-{
-    assert(fmt != NULL);
-
-    struct json_object *obj = json_object_new_object();
-    va_list ap;
-
-    WLIP_JSON_CHECK(json_object_new_object, obj);
-    va_start(ap, fmt);
-
-    for (char c = *fmt; c != NUL; c = *(++fmt))
-    {
-        const char *name = va_arg(ap, const char *);
-        struct json_object *subobj;
-
-        switch (c)
-        {
-        case 's':
-        {
-            const char *str = va_arg(ap, const char *);
-            uint32_t len = va_arg(ap, uint32_t);
-
-            subobj = json_object_new_string_len(str, len);
-            break;
-        }
-        case 'i':
-        {
-            int64_t nr = va_arg(ap, int64_t);
-
-            subobj = json_object_new_int64(nr);
-            break;
-        }
-        case 'b':
-            bool b = va_arg(ap, int);
-
-            subobj = json_object_new_boolean(b);
-            break;
-        case 'j':
-            subobj = va_arg(ap, struct json_object *);
-            break;
-        default:
-            fprintf(stderr, "construct_json_object() unknown specifier");
-            abort();
-        }
-
-        json_object_object_add_ex(
-            obj, name, subobj, JSON_C_OBJECT_ADD_KEY_IS_NEW
-        );
-    }
-
-    va_end(ap);
-
-    return obj;
 }

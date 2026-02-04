@@ -1,8 +1,9 @@
-sources += files('alloc.c', 'array.c', 'clipboard.c', 'database.c', 'event.c', 'hashtable.c', 'util.c', 'wayland.c', 'server.c', 'server_api.c', 'ringbuffer.c')
+clip_sources += files('clipboard.c', 'database.c')
+server_sources = files('event.c', 'server.c', 'server_api.c', 'json_util.c')
+util_sources += files('alloc.c', 'array.c', 'hashtable.c', 'ringbuffer.c', 'util.c', 'sha256.c')
+wl_sources += files('wayland.c')
+
 includes += include_directories('.')
 
-test_comp_sources = []
-
 subdir('lua')
-subdir('sha256')
 subdir('protocol')
