@@ -20,15 +20,12 @@ int wayland_get_fd(void);
 void wayland_uninit();
 
 wlseat_T *wayland_get_seat(const char *name);
-bool wayland_attach_selection(
-    wlseat_T *seat, wlselection_type_T type, clipboard_T *cb
-);
+wlselection_T *wlseat_get_selection(wlseat_T *seat, wlselection_type_T type);
 
 wlselection_T *wlselection_ref(wlselection_T *sel);
 void wlselection_unref(wlselection_T *sel);
 
-void
-wlselection_update(wlselection_T *sel);
-int
-wlselection_get_fd(wlselection_T *sel, const char *mime_type);
+void wlselection_update(wlselection_T *sel);
+int wlselection_get_fd(wlselection_T *sel, const char *mime_type);
 bool wlselection_is_valid(wlselection_T *sel);
+bool wlselection_set_clipboard(wlselection_T *sel, clipboard_T *cb);

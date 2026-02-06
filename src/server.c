@@ -233,12 +233,12 @@ server_init(void)
 
         if (stat(socketdir, &sb) == -1 || !S_ISDIR(sb.st_mode))
         {
-            wlip_error("Socket directory '%s' does not ecist", socketdir);
+            wlip_error("Socket directory '%s' does not exist", socketdir);
             goto fail;
         }
 
         if (strrchr(display, '/') != NULL)
-            display = strrchr(display, '/');
+            display = strrchr(display, '/') + 1;
 
         bool found = false;
 

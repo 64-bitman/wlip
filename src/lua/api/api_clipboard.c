@@ -34,14 +34,14 @@ method_attach(lua_State *L)
     }
 
     wlseat_T *seat = wayland_get_seat(seat_name);
+    wlselection_T *sel;
 
-    if (seat == NULL)
-    {
+    if (seat == NULL || (sel = wlseat_get_selection(seat, type)) == NULL ||
+        !wlselection_set_clipboard(sel, cb) ||
+        !clipboard_add_selection(cb, sel))
         lua_pushboolean(L, false);
-        return 1;
-    }
-
-    lua_pushboolean(L, wayland_attach_selection(seat, type, cb));
+    else
+        lua_pushboolean(L, true);
     return 1;
 }
 

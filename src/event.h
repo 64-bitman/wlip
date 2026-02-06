@@ -7,7 +7,8 @@
 typedef enum
 {
     EVENTSOURCE_TYPE_FD,
-    EVENTSOURCE_TYPE_TIMER
+    EVENTSOURCE_TYPE_TIMER,
+    EVENTSOURCE_TYPE_WLCHECK
 } eventsource_type_T;
 
 typedef struct eventsource_S eventsource_T;
@@ -45,8 +46,15 @@ typedef struct
     int remaining;
 } eventtimer_T;
 
+// Called after Wayland events are read and dispatched in the event cycle.
+typedef struct
+{
+    eventsource_T base;
+} eventwlcheck_T;
+
 void event_run(void);
 void event_remove(eventsource_T *source);
+void eventsource_set_removed(eventsource_T *source);
 
 void event_add_fd(
     eventfd_T *fdsource, int fd, int events, eventsource_func_T func,
@@ -55,3 +63,5 @@ void event_add_fd(
 void event_add_timer(
     eventtimer_T *timer, int interval, eventsource_func_T func, void *udata
 );
+void
+event_add_wlcheck(eventwlcheck_T *check, eventsource_func_T func, void *udata);

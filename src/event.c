@@ -144,11 +144,10 @@ event_run(void)
             {
                 if (!caught && i < pfds_len)
                 {
-                    struct pollfd *pfd = pfds + i;
+                    struct pollfd *pfd = pfds + i++;
                     eventfd_T *fdsource = (eventfd_T *)source;
 
                     fdsource->revents = pfd->revents;
-                    i++;
                     trigger = true;
                 }
                 break;
@@ -207,6 +206,16 @@ event_remove(eventsource_T *source)
         if (next != NULL)
             next->prev = prev;
     }
+    eventsource_set_removed(source);
+}
+
+/*
+ * Doesn't actually do anything other than marking the source as "removed".
+ */
+void
+eventsource_set_removed(eventsource_T *source)
+{
+    assert(source != NULL);
     source->next = source->prev = NULL;
 }
 
@@ -223,7 +232,7 @@ eventsource_init(
     source->func = func;
     source->udata = udata;
 
-    source->next = source->prev = NULL;
+    eventsource_set_removed(source);
 }
 
 static void
@@ -287,4 +296,18 @@ event_add_timer(
     timer->interval = timer->remaining = interval;
 
     eventsource_add(&timer->base);
+}
+
+/*
+ * Add a idle check source to the event loop. It will be called after the
+ * Wayland display is read and dispatched.
+ */
+void
+event_add_wlcheck(eventwlcheck_T *check, eventsource_func_T func, void *udata)
+{
+    assert(check != NULL);
+    assert(func != NULL);
+
+    eventsource_init(&check->base, EVENTSOURCE_TYPE_WLCHECK, func, udata);
+    eventsource_add(&check->base);
 }

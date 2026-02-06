@@ -96,7 +96,7 @@
             abort();                                                           \
     } while (false)
 
-typedef struct wlselection_S
+struct wlselection_S
 {
     bool available;
 
@@ -127,9 +127,11 @@ typedef struct wlselection_S
 
     // Clipboard that this selection is attached to. May be NULL.
     clipboard_T *clipboard;
-} wlselection_T;
+};
 
-typedef struct wlseat_S
+#define WLSEAT_NAME_MAXSIZE 32
+
+struct wlseat_S
 {
     int refcount;
 
@@ -140,6 +142,7 @@ typedef struct wlseat_S
 
     // May be false if seat was removed, but is still referenced somewhere.
     bool started;
+    bool got_name;
 
     union
     {
@@ -154,8 +157,11 @@ typedef struct wlseat_S
     wlselection_T regular;
     wlselection_T primary;
 
-    char name[1]; // Actually longer (name of the seat).
-} wlseat_T;
+    wlseat_T *next; // Used when waiting for seat name. This is an edge case but
+                    // handle it since not handling results in a memory leak.
+
+    char name[WLSEAT_NAME_MAXSIZE];
+};
 
 typedef enum
 {
@@ -173,15 +179,18 @@ static struct
     // Global object proxies
     struct
     {
+        wlseat_T *waiting_seats;
         hashtable_T seats;
 
         union
         {
             struct ext_data_control_manager_v1 *ext;
             struct zwlr_data_control_manager_v1 *wlr;
+            void *dummy;
         } dac;
     } globals;
 
+    bool got_manager;
     bool reading; // If we have called wl_display_prepare_read().
 
     dataprotocol_T protocol;
@@ -283,14 +292,67 @@ wlselection_str(wlselection_type_T type)
 }
 
 static void
+remove_seat_from_waiting(wlseat_T *seat)
+{
+    assert(seat != NULL);
+
+    wlseat_T *waiting = CONNECTION.globals.waiting_seats, *prev = NULL;
+
+    while (waiting != NULL)
+    {
+        wlseat_T *next = waiting->next;
+
+        if (waiting == seat)
+        {
+            if (prev != NULL)
+                prev->next = next;
+            if (CONNECTION.globals.waiting_seats == seat)
+                CONNECTION.globals.waiting_seats = next;
+            break;
+        }
+
+        prev = waiting;
+        waiting = next;
+    }
+}
+
+static void
 wl_seat_listener_event_name(
     void *data, struct wl_seat *proxy UNUSED, const char *name
 )
 {
-    wlseat_T **seat = data;
+    wlseat_T *seat = data;
 
-    *seat = realloc(*seat, sizeof(wlseat_T) + STRLEN(name));
-    sprintf((*seat)->name, "%s", name);
+    if (strlen(name) >= WLSEAT_NAME_MAXSIZE)
+    {
+        wlip_warn("Wayland seat '%s' name too long", name);
+        return;
+    }
+
+    hash_T hash = hash_get(name);
+    hashbucket_T *b = hashtable_lookup(&CONNECTION.globals.seats, name, hash);
+
+    // May be true if "name" event is received multiple times. If so then
+    // re add to hash table with new name.
+    if (seat->got_name)
+    {
+        wlip_debug("Seat '%s' renamed to '%s'", seat->name, name);
+        hashtable_remove(&CONNECTION.globals.seats, seat->name, 0);
+    }
+    else if (!HB_ISEMPTY(b))
+        // May happen if two seats have the same name, if so then just ignore
+        return;
+    else
+    {
+        wlip_debug("New seat '%s'", name);
+
+        // Remove seat from waiting list
+        remove_seat_from_waiting(seat);
+    }
+
+    seat->got_name = true;
+    snprintf(seat->name, WLSEAT_NAME_MAXSIZE, "%s", name);
+    hashtable_add(&CONNECTION.globals.seats, b, seat->name, hash);
 }
 
 static void
@@ -298,8 +360,8 @@ wl_seat_listener_event_capabilities(
     void *data, struct wl_seat *proxy UNUSED, uint32_t capabilities
 )
 {
-    wlseat_T **seat = data;
-    (*seat)->capabilities = capabilities;
+    wlseat_T *seat = data;
+    seat->capabilities = capabilities;
 }
 
 static const struct wl_seat_listener wl_seat_listener = {
@@ -316,31 +378,34 @@ wlseat_new(struct wl_seat *proxy, uint32_t name)
 {
     assert(proxy != NULL);
 
-    // Create a new wlseat_T object and add it to the table. We will realloc
-    // later to larger size to fit name.
+    // Seat is only added to table if name is received. If client connection is
+    // closed but "name" event is never recieved, then it is freed,
     wlseat_T *seat = wlip_calloc(1, sizeof(wlseat_T));
-
-    wl_seat_add_listener(proxy, &wl_seat_listener, &seat);
-    wl_display_roundtrip(CONNECTION.display);
 
     seat->proxy = proxy;
     seat->numerical_name = name;
-
-    wlip_debug("New seat '%s'", seat->name);
-
-    hash_T hash = hash_get(seat->name);
-    hashbucket_T *b =
-        hashtable_lookup(&CONNECTION.globals.seats, seat->name, hash);
-
-    assert(HB_ISEMPTY(b));
-    hashtable_add(&CONNECTION.globals.seats, b, seat->name, hash);
 
     seat->regular.seat = seat;
     seat->primary.seat = seat;
     seat->regular.type = WLSELECTION_TYPE_REGULAR;
     seat->primary.type = WLSELECTION_TYPE_PRIMARY;
     seat->refcount = 1;
+    seat->next = NULL;
+
     hashtable_init(&seat->mime_types, 0);
+    eventsource_set_removed((eventsource_T *)&seat->regular.null_timer);
+    eventsource_set_removed((eventsource_T *)&seat->primary.null_timer);
+
+    if (CONNECTION.globals.waiting_seats == NULL)
+        CONNECTION.globals.waiting_seats = seat;
+    else
+    {
+        seat->next = CONNECTION.globals.waiting_seats;
+        CONNECTION.globals.waiting_seats = seat;
+    }
+
+    wl_seat_add_listener(proxy, &wl_seat_listener, seat);
+    wl_display_roundtrip(CONNECTION.display); // Initial roundtrip
 }
 
 /*
@@ -374,6 +439,15 @@ wlseat_start(wlseat_T *seat)
             seat->device.wlr, &wlr_device_listener, seat
         );
     }
+}
+
+/*
+ * Set the availability of the selections for seat.
+ */
+static void
+wlseat_check(wlseat_T *seat)
+{
+    assert(seat != NULL);
 
     seat->regular.available = true;
 
@@ -411,35 +485,24 @@ wayland_get_seat(const char *name)
 }
 
 /*
- * Attach the selection from the seat to the given clipboard, if the selection
- * type is supported. Additionally also start the seat as well if it isn't
- * (start listening for events). Returns true if successful.
+ * Return the wlselection_T from the seat. Returns NULL if selection is not
+ * available.
  */
-bool
-wayland_attach_selection(
-    wlseat_T *seat, wlselection_type_T type, clipboard_T *cb
-)
+wlselection_T *
+wlseat_get_selection(wlseat_T *seat, wlselection_type_T type)
 {
     assert(seat != NULL);
 
     wlselection_T *sel = wlselection_get(seat, type);
 
-    wlseat_start(seat);
-    if (!sel->available || sel->clipboard != NULL)
-        return false;
-
-    // TODO: stop seat if fail?
-    if (clipboard_add_selection(cb, sel))
+    wlseat_check(seat);
+    if (!sel->available)
     {
-        wlip_debug(
-            "Attaching %s %s selection to clipboard '%s'", seat->name,
-            wlselection_str(type), cb->name
-        );
-        sel->clipboard = cb;
+        DESTROY_DEVICE(seat->device.dummy);
+        return sel;
     }
-    else
-        return false;
-    return true;
+    wlseat_start(seat);
+    return sel;
 }
 
 static void
@@ -555,7 +618,7 @@ wayland_check(int revents)
             wl_display_dispatch_pending(CONNECTION.display) == -1)
         {
             // Wayland connection lost, exit.
-            wlip_debug("Wayland display connection lost, exiting...");
+            wlip_debug("Wayland display connection lost or error, exiting...");
             return true;
         }
     }
@@ -595,11 +658,22 @@ wayland_init(void)
 
     CONNECTION.registry = wl_display_get_registry(CONNECTION.display);
     CONNECTION.protocol = DATA_PROTOCOL_NONE;
+    CONNECTION.got_manager = false;
 
     hashtable_init(&CONNECTION.globals.seats, 0);
+    CONNECTION.globals.waiting_seats = NULL;
 
     wl_registry_add_listener(CONNECTION.registry, &registry_listener, NULL);
     wl_display_roundtrip(CONNECTION.display);
+    if (CONNECTION.globals.dac.dummy == NULL)
+    {
+        wlip_error(
+            "wlr-data-control-unstable-v1 or ext-data-control-v1 protocol not "
+            "supported by compositor"
+        );
+        return FAIL;
+    }
+    CONNECTION.got_manager = true;
     return OK;
 }
 
@@ -627,6 +701,9 @@ wayland_uninit(void)
         offsetof(wlseat_T, name)
     );
 
+    while (CONNECTION.globals.waiting_seats != NULL)
+        remove_seat_from_waiting(CONNECTION.globals.waiting_seats);
+
     wl_registry_destroy(CONNECTION.registry);
     wl_display_disconnect(CONNECTION.display);
     CONNECTION.display = NULL;
@@ -638,7 +715,8 @@ registry_listener_event_global(
     const char *interface, uint32_t version
 )
 {
-    if (strcmp(interface, ext_data_control_manager_v1_interface.name) == 0)
+    if (!CONNECTION.got_manager &&
+        strcmp(interface, ext_data_control_manager_v1_interface.name) == 0)
     {
         if (CONNECTION.protocol != DATA_PROTOCOL_NONE)
         {
@@ -653,7 +731,8 @@ registry_listener_event_global(
         wlip_debug("Using ext data control version %u", version);
     }
     // If we already have ext-data-control, then just ignore.
-    else if (CONNECTION.protocol == DATA_PROTOCOL_NONE &&
+    else if (!CONNECTION.got_manager &&
+             CONNECTION.protocol == DATA_PROTOCOL_NONE &&
              strcmp(interface, zwlr_data_control_manager_v1_interface.name) ==
                  0)
     {
@@ -851,6 +930,7 @@ wlselection_set(wlselection_T *sel)
         sel->ignore_next_null = true;
     }
 
+    // TODO: remove hashtable and just use arrays
     clipentry_T *entry = sel->clipboard->entry;
 
     if (entry != NULL)
@@ -957,6 +1037,22 @@ wlselection_is_valid(wlselection_T *sel)
     assert(sel != NULL);
 
     return sel->seat->started;
+}
+
+/*
+ * Set the clipboard of selection to "cb" and return true. If selection already
+ * set to clipboard, then do nothing and return false.
+ */
+bool
+wlselection_set_clipboard(wlselection_T *sel, clipboard_T *cb)
+{
+    assert(sel != NULL);
+    assert(cb != NULL);
+
+    if (sel->clipboard != NULL)
+        return false;
+    sel->clipboard = cb;
+    return true;
 }
 
 /*
@@ -1116,6 +1212,7 @@ device_listener_event_xselection(
 
         memset(&sel->seat->mime_types, 0, sizeof(hashtable_T));
         // Push selection to clipboard
+        assert(sel->clipboard != NULL);
         clipboard_push_selection(sel->clipboard, sel, mime_types);
     }
 }
