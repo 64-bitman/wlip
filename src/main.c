@@ -7,7 +7,6 @@
 static const struct option OPTIONS[] = {
     {"config", required_argument, 0, 'c'},
     {"data", required_argument, 0, 'd'},
-    {"log", required_argument, 0, 'l'},
     {NULL, 0, 0, 0}
 };
 
@@ -17,34 +16,32 @@ main(int argc, char **argv)
     int c;
     int idx;
 
+    char *config_dir = NULL;
+    char *database_dir = NULL;
+
     while ((c = getopt_long(argc, argv, "", OPTIONS, &idx)) != -1)
     {
         switch (c)
         {
         case 'c':
-            WLIP.config_dir = strdup(optarg);
+            config_dir = strdup(optarg);
             break;
         case 'd':
-            WLIP.database_dir = strdup(optarg);
-            break;
-        case 'l':
-            WLIP.log_fp = fopen(optarg, "r");
+            database_dir = strdup(optarg);
             break;
         default:
             return EXIT_FAILURE;
         }
     }
 
-    if (WLIP.log_fp == NULL)
-        // Use stderr
-        WLIP.log_fp = stderr;
+    struct wlip wlip;
 
-    if (wlip_init() == FAIL)
+    if (wlip_init(&wlip, config_dir, database_dir) == FAIL)
         return EXIT_FAILURE;
 
-    int ret = wlip_run();
+    int ret = wlip_run(&wlip);
 
-    wlip_uninit();
+    wlip_uninit(&wlip);
 
     return ret == OK ? EXIT_SUCCESS : EXIT_FAILURE;
 }

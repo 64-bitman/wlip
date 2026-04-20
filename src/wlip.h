@@ -1,58 +1,45 @@
 #pragma once
 
-#include "ext-data-control-v1.h"
+#include "config.h"
+#include "database.h"
+#include "wayland.h"
 #include <sqlite3.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <wayland-client.h>
-
-struct wlip_selection
-{
-    struct ext_data_control_offer_v1  *offer;
-    struct ext_data_control_source_v1 *source;
-
-    // Creation time of current clipboard entry. If -1, then clipboard is
-    // cleared.
-    int64_t         creation_time;
-    struct wl_array mime_types; // Inline array of mime types for current offer
-};
-
-/*
- * Created per Wayland seat
- */
-struct wlip_seat
-{
-    char           *name; // If NULL, then seat should not be used
-    struct wl_seat *proxy;
-    uint32_t        id; // Used to identify seat from "global_remove" event
-
-    struct ext_data_control_device_v1 *device;
-
-    struct wlip_selection sel_regular;
-    struct wlip_selection sel_primary;
-
-    struct wl_list link;
-};
 
 struct wlip
 {
-    char *config_dir;   // May be NULL
-    char *database_dir; // May be NULL
-    FILE *log_fp;       // May be NULL
+    char *config_directory;
+    char *database_directory;
 
-    char               *display_name;
-    struct wl_display  *display;
-    struct wl_registry *registry;
+    struct config   config;
+    struct wayland  wayland;
+    struct database database;
 
-    struct ext_data_control_manager_v1 *manager;
-    struct wl_list                      seats;
+    // Hash of last/most recent selection event. Used to check if a new
+    // selection event is the same in terms of mime types and data.
+    uint8_t selection_hash[SHA256_BLOCK_SIZE];
+    bool selection_hash_init; // If "selection_hash" is initialized
 
-    // Inline array of allowed mime types to save.
-    struct wl_array allowed_mime_types;
+    struct wl_list timers; // Used in event loop
 };
 
-extern struct wlip WLIP;
+int  wlip_init(struct wlip *wlip, char *config_dir, char *database_dir);
+void wlip_uninit(struct wlip *wlip);
+int  wlip_run(struct wlip *wlip);
 
-int  wlip_init(void);
-void wlip_uninit(void);
-int  wlip_run(void);
+void wlip_init_timer(struct timer *timer);
+void wlip_start_timer(
+    struct wlip  *wlip,
+    struct timer *timer,
+    int           delay,
+    timer_func    callback,
+    void         *udata
+);
+void wlip_stop_timer(struct timer *timer);
+
+int64_t wlip_new_selection(
+    struct wlip                      *wlip,
+    struct ext_data_control_offer_v1 *offer,
+    const struct wl_array            *mime_types
+);

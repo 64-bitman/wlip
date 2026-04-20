@@ -1,27 +1,23 @@
 #include "util.h"
-#include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
 #include <pwd.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h> // IWYU pragma: keep
+#include <time.h>
 #include <unistd.h>
 
 void
 wlip_log(const char *fmt, ...)
 {
-    if (WLIP.log_fp == NULL)
-        return;
-
     va_list ap;
 
     va_start(ap, fmt);
-    vfprintf(WLIP.log_fp, fmt, ap);
-    fputc('\n', WLIP.log_fp);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
     va_end(ap);
-
-    fflush(WLIP.log_fp);
 }
 
 char *
@@ -125,4 +121,21 @@ get_base_dir(enum base_directory type, const char *child)
     }
 
     return dir;
+}
+
+/*
+ * Get time in nanoseconds depending on clock ID.
+ */
+int64_t
+get_time_ns(clockid_t id)
+{
+    struct timespec ts;
+
+    if (clock_gettime(id, &ts) == -1)
+    {
+        wlip_err("Error getting time");
+        return -1;
+    }
+
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }

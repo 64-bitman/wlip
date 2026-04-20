@@ -1,37 +1,41 @@
 #include "config.h"
 #include "tomlc17.h"
 #include "util.h"
-#include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
 #include <stdlib.h>
 #include <string.h>
 
-static int config_parse(const char *config_file);
+static int config_parse(struct config *config, const char *config_file);
 
 /*
  * Parse and apply the configuration. If "config_dir" is NULL, then the default
  * path is used. Returns OK on success and FAIL on failure.
  */
 int
-config_init(const char *config_dir)
+config_init(struct config *config, const char *cfgdir)
 {
     int   ret = OK;
     char *tofree = NULL;
     char *config_path = NULL;
 
-    if (config_dir == NULL)
+    if (cfgdir == NULL)
     {
         tofree = get_base_dir(XDG_CONFIG_HOME, "wlip");
-        config_dir = tofree;
+        cfgdir = tofree;
     }
-    if (config_dir == NULL)
+    if (cfgdir == NULL)
         return FAIL;
 
-    config_path = wlip_strdup_printf("%s/%s", config_dir, "config.toml");
+    config_path = wlip_strdup_printf("%s/%s", cfgdir, "config.toml");
     if (config_path == NULL)
         goto fail;
 
-    if (config_parse(config_path) == FAIL)
+    config->display_name = NULL;
+    config->configured_seats = NULL;
+    config->configured_seats_len = 0;
+    wl_array_init(&config->allowed_mime_types);
+
+    if (config_parse(config, config_path) == FAIL)
         goto fail;
 
     if (false)
@@ -44,11 +48,22 @@ fail:
     return ret;
 }
 
+void
+config_uninit(struct config *config)
+{
+    for (uint32_t i = 0; i < config->configured_seats_len; i++)
+        free(config->configured_seats[i].name);
+    free(config->configured_seats);
+
+    wl_array_release(&config->allowed_mime_types);
+    free(config->display_name);
+}
+
 /*
  * Parse and apply the config file. Returns OK on success and FAIL on failure.
  */
 static int
-config_parse(const char *config_file)
+config_parse(struct config *config, const char *config_file)
 {
     toml_result_t result = toml_parse_file_ex(config_file);
 
@@ -62,8 +77,8 @@ config_parse(const char *config_file)
 
     if (t_display.type == TOML_STRING)
     {
-        if (WLIP.display_name != NULL)
-            WLIP.display_name = strdup(t_display.u.s);
+        if (config->display_name != NULL)
+            config->display_name = strdup(t_display.u.s);
     }
     else if (t_display.type != TOML_UNKNOWN)
     {
@@ -71,54 +86,73 @@ config_parse(const char *config_file)
         goto fail;
     }
 
-    toml_datum_t t_seats = toml_seek(result.toptab, "wlip.seats");
+    toml_datum_t t_seats = toml_seek(result.toptab, "seats");
 
-    if (t_seats.type == TOML_ARRAY)
+    if (t_seats.type == TOML_TABLE)
     {
-        for (int32_t i = 0; i < t_seats.u.arr.size; i++)
+        config->configured_seats =
+            malloc(sizeof(struct config_seat) * t_seats.u.tab.size);
+
+        if (config->configured_seats == NULL)
         {
-            toml_datum_t t_seat = t_seats.u.arr.elem[i];
+            wlip_err("Error allocating config");
+            goto fail;
+        }
 
-            if (t_seat.type == TOML_STRING)
+        for (int32_t i = 0; i < t_seats.u.tab.size; i++)
+        {
+            const char  *seatname = t_seats.u.tab.key[i];
+            toml_datum_t t_seat = t_seats.u.tab.value[i];
+
+            if (t_seat.type == TOML_TABLE)
             {
-                // First allocate a structure for the seat. We will later
-                // receive the globals and then actually get the proxy if there
-                // is one.
-                struct wlip_seat *seat = calloc(1, sizeof(*seat));
-                bool              success = false;
+                struct config_seat *seat = config->configured_seats + i;
 
-                if (seat != NULL)
+                seat->name = strdup(seatname);
+                if (seat->name == NULL)
                 {
-                    seat->name = strdup(t_seat.u.s);
-                    if (seat->name != NULL)
-                    {
-                        wl_list_insert(&WLIP.seats, &seat->link);
-                        success = true;
-                    }
+                    wlip_err("Error allocating config");
+                    goto fail;
                 }
 
-                if (!success)
-                {
-                    free(seat);
-                    wlip_err("Error creating seat structure");
-                }
+                toml_datum_t t_regular = toml_seek(t_seat, "regular");
+                toml_datum_t t_primary = toml_seek(t_seat, "primary");
+
+                seat->regular = seat->primary = true;
+                if (t_regular.type == TOML_BOOLEAN)
+                    seat->regular = t_regular.u.boolean;
+                if (t_primary.type == TOML_BOOLEAN)
+                    seat->primary = t_primary.u.boolean;
+                config->configured_seats_len++;
             }
             else
             {
-                wlip_log("Config: wlip.seats is not an array of strings");
+                wlip_log("Config: wlip.seats is not an table of tables");
                 goto fail;
             }
         }
     }
     else if (t_seats.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.seats is not an array of strings");
+        wlip_log("Config: wlip.seats is not an table of tables");
+        goto fail;
+    }
+
+    toml_datum_t t_max_entries = toml_seek(result.toptab, "wlip.max_entries");
+
+    config->max_entries = 100;
+    if (t_max_entries.type == TOML_INT64)
+        config->max_entries = t_max_entries.u.int64;
+    else if (t_max_entries.type != TOML_UNKNOWN)
+    {
+        wlip_log("Config: wlip.max_entries is not an integer");
         goto fail;
     }
 
     toml_free(result);
     return OK;
 fail:
+    config_uninit(config);
     toml_free(result);
     return FAIL;
 }
