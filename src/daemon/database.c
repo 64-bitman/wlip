@@ -619,6 +619,7 @@ database_deserialize_entries(
 {
     sqlite3_stmt *stmt = db->stmt.deserialize_entries;
     int           ret;
+    bool          did = false;
 
     sqlite3_bind_int64(stmt, 1, n);
     sqlite3_bind_int64(stmt, 2, start);
@@ -633,6 +634,7 @@ database_deserialize_entries(
         };
 
         callback(&entry, udata);
+        did = true;
     }
 
     sqlite3_reset(stmt);
@@ -646,7 +648,7 @@ database_deserialize_entries(
         return FAIL;
     }
 
-    return OK;
+    return did ? OK : FAIL;
 }
 
 void

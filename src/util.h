@@ -1,6 +1,7 @@
 #pragma once
 
 #include <json.h>
+#include <regex.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h> // IWYU pragma: keep
@@ -69,6 +70,7 @@ char   *wlip_strdup_printf(const char *fmt, ...) PRINTFLIKE(1, 2);
 char   *get_base_dir(enum base_directory type, const char *child);
 int64_t get_time_ns(clockid_t id);
 int     write_data(int fd, const uint8_t *data, size_t len);
+bool    match_regex_array(regex_t *arr, int len, const char *target);
 
 int   create_lock(const char *path, int *lock_fd);
 pid_t lock_is_locked(const char *path);

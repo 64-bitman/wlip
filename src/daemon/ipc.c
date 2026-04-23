@@ -96,7 +96,10 @@ ipc_init(
         goto fail;
     }
     else
+    {
+        unlink(path);
         unlink(lock_path);
+    }
 
     if (create_lock(lock_path, &ipc->lock_fd) == FAIL)
         goto fail;
@@ -106,6 +109,7 @@ ipc_init(
     if (fd == -1)
     {
         wlip_err("Error creating IPC socket");
+        unlink(lock_path);
         goto fail;
     }
 
@@ -117,12 +121,14 @@ ipc_init(
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
     {
         wlip_err("Error binding to IPC socket");
+        unlink(lock_path);
         goto fail;
     }
 
     if (listen(fd, 5) == -1)
     {
         wlip_err("Error listening to IPC socket");
+        unlink(lock_path);
         goto fail;
     }
 

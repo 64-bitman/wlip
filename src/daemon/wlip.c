@@ -333,6 +333,10 @@ wlip_new_selection(
         }
 #undef BUFSIZE
 
+        // Check if data is bigger than configured max size
+        if (content.size > (size_t)wlip->config.max_size)
+            goto fail;
+
         sha256_final(&sha_ctx, data_id);
 
         sha256_update(&sha_hash, (BYTE *)mime_type, strlen(mime_type));

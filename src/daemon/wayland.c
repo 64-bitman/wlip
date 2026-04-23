@@ -128,6 +128,7 @@ wayland_init(struct wayland *wayland, struct config *config, struct wlip *wlip)
     }
 
     wl_list_init(&wayland->seats);
+    wayland->entry_id = -1;
 
     wl_registry_add_listener(wayland->registry, &registry_listener, wayland);
 
@@ -469,6 +470,27 @@ data_offer_event_offer(
 {
     struct wayland_seat *seat = udata;
 
+    // Do not save entry if mime type is configured to be blocked.
+    if (seat->wayland->config->blocked_mime_types.data != NULL &&
+        match_regex_array(
+            seat->wayland->config->blocked_mime_types.data,
+            seat->wayland->config->blocked_mime_types.size / sizeof(regex_t),
+            mime_type
+        ))
+    {
+        seat->ignore_next = true;
+        return;
+    }
+
+    // Check if mime type is allowed to be saved
+    if (seat->wayland->config->allowed_mime_types.data != NULL &&
+        !match_regex_array(
+            seat->wayland->config->allowed_mime_types.data,
+            seat->wayland->config->allowed_mime_types.size / sizeof(regex_t),
+            mime_type
+        ))
+        return;
+
     char *ptr = wl_array_add(&seat->mime_types, strlen(mime_type) + 1);
 
     if (ptr == NULL)
@@ -520,12 +542,19 @@ selection_event_handler(
         return;
     }
 
+    if (seat->ignore_next)
+    {
+        if (offer != NULL)
+            ext_data_control_offer_v1_destroy(offer);
+        sel->data_offer = NULL;
+        return;
+    }
+
     sel->data_offer = offer;
 
     if (offer == NULL)
     {
         if (sel->seat->wayland->entry_id == -1)
-            // Prevent recursive loop
             return;
 
         // Selection has been cleared, try becoming the source client. Add a

@@ -2,6 +2,7 @@
 #include <errno.h> // IWYU pragma: keep
 #include <fcntl.h>
 #include <pwd.h>
+#include <regex.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -153,6 +154,22 @@ write_data(int fd, const uint8_t *data, size_t len)
         len -= w;
 
     return w == -1 ? FAIL : OK;
+}
+
+/*
+ * Check if "target" matches any of the regexes in arr, which must not be NULL.
+ */
+bool
+match_regex_array(regex_t *arr, int len, const char *target)
+{
+    for (int i = 0; i < len; i++)
+    {
+        regex_t *reg = arr + i;
+
+        if (regexec(reg, target, 0, NULL, 0) == 0)
+            return true;
+    }
+    return false;
 }
 
 /*

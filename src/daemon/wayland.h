@@ -47,6 +47,9 @@ struct wayland_seat
     struct wayland_selection           sel_regular;
     struct wayland_selection           sel_primary;
 
+    // If next selection event should not be recorded
+    bool ignore_next;
+
     // Temporary array used when receiving data offer events. Note that "->data"
     // may still be NULL if data offer has no mime types.
     struct wl_array mime_types;
