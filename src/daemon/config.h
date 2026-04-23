@@ -20,6 +20,9 @@ struct config
     // Maximum number of entries to store in database, must be > 0
     int64_t max_entries;
 
+    // Enable persistent history
+    bool persist;
+
     // Array of seats that the user has configured.
     struct config_seat *configured_seats;
     uint32_t            configured_seats_len;

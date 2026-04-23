@@ -622,17 +622,10 @@ data_source_event_send(
         goto exit;
 
     const uint8_t *data = sqlite3_column_blob(stmt, 0);
-    int            remaining = sqlite3_column_bytes(stmt, 0);
+    int            len = sqlite3_column_bytes(stmt, 0);
 
-    if (data != NULL)
-    {
-        ssize_t w;
-        while (remaining > 0 && (w = write(fd, data, remaining)) > 0)
-            remaining -= w;
-
-        if (w == -1)
-            wlip_err("Error writing data");
-    }
+    if (data != NULL && write_data(fd, data, len) == FAIL)
+        wlip_err("Error writing data");
 
     sqlite3_reset(stmt);
 

@@ -1,6 +1,7 @@
 #include "wlip.h"
 #include "config.h"
 #include "database.h"
+#include "ipc.h"
 #include "sha256.h"
 #include "util.h"
 #include <errno.h>
@@ -34,6 +35,13 @@ wlip_init(struct wlip *wlip, char *config_dir, char *database_dir)
         wayland_uninit(&wlip->wayland);
         return FAIL;
     }
+    if (ipc_init(&wlip->ipc, getenv("WLIP_SOCK"), &wlip->config, wlip) == FAIL)
+    {
+        config_uninit(&wlip->config);
+        wayland_uninit(&wlip->wayland);
+        database_uninit(&wlip->database);
+        return FAIL;
+    }
 
     if (database_get_selection_hash(&wlip->database, wlip->selection_hash) ==
         OK)
@@ -59,6 +67,7 @@ wlip_uninit(struct wlip *wlip)
     config_uninit(&wlip->config);
     wayland_uninit(&wlip->wayland);
     database_uninit(&wlip->database);
+    ipc_uninit(&wlip->ipc);
 
     free(wlip->config_directory);
     free(wlip->database_directory);
@@ -91,9 +100,13 @@ wlip_run(struct wlip *wlip)
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    struct pollfd pfd = {
-        .fd = wl_display_get_fd(wlip->wayland.display), .events = POLLIN
-    };
+#define MAX_IPC_CONNECTIONS 10
+    struct pollfd pfds[2 + MAX_IPC_CONNECTIONS];
+
+    pfds[0].fd = wl_display_get_fd(wlip->wayland.display);
+    pfds[0].events = POLLIN;
+    pfds[1].fd = wlip->ipc.fd;
+    pfds[1].events = POLLIN;
 
     while (SIGCOUNT == 0)
     {
@@ -128,7 +141,14 @@ wlip_run(struct wlip *wlip)
         if (start == -1)
             return FAIL;
 
-        int ret = ppoll(&pfd, 1, timeout_ns == -1 ? NULL : &timeout, &orig);
+        int pfds_len = 2;
+
+        pfds_len += ipc_set_pfds(&wlip->ipc, pfds + 2, MAX_IPC_CONNECTIONS);
+
+#undef MAX_IPC_CONNECTIONS
+
+        int ret =
+            ppoll(pfds, pfds_len, timeout_ns == -1 ? NULL : &timeout, &orig);
 
         if (ret == -1)
         {
@@ -138,7 +158,7 @@ wlip_run(struct wlip *wlip)
             return FAIL;
         }
 
-        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
+        if (pfds[0].revents & (POLLHUP | POLLERR | POLLNVAL))
         {
             wl_display_cancel_read(wlip->wayland.display);
             break;
@@ -171,6 +191,16 @@ wlip_run(struct wlip *wlip)
                 }
             }
         }
+
+        ipc_check_pfds(&wlip->ipc, pfds + 2);
+
+        if (pfds[1].revents & (POLLHUP | POLLERR | POLLNVAL))
+        {
+            wlip_log("IPC server lost");
+            return FAIL;
+        }
+        else if (pfds[1].revents & POLLIN)
+            ipc_accept(&wlip->ipc);
     }
 
     return OK;

@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "database.h"
+#include "ipc.h"
 #include "wayland.h"
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -15,11 +16,12 @@ struct wlip
     struct config   config;
     struct wayland  wayland;
     struct database database;
+    struct ipc      ipc;
 
     // Hash of last/most recent selection event. Used to check if a new
     // selection event is the same in terms of mime types and data.
     uint8_t selection_hash[SHA256_BLOCK_SIZE];
-    bool selection_hash_init; // If "selection_hash" is initialized
+    bool    selection_hash_init; // If "selection_hash" is initialized
 
     struct wl_list timers; // Used in event loop
 };

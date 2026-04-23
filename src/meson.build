@@ -1,4 +1,5 @@
-sources += files('util.c', 'wlip.c', 'config.c', 'tomlc17.c', 'wayland.c', 'database.c', 'sha256.c')
+sources += files('util.c', 'base64.c')
 includes += include_directories('.')
 
-subdir('protocol')
+subdir('daemon')
+subdir('cli')

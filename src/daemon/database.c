@@ -84,22 +84,28 @@ int
 database_init(struct database *db, const char *dir, struct config *config)
 {
     char *tofree = NULL;
+    char *path;
 
-    if (dir == NULL)
+    if (config->persist)
     {
-        tofree = get_base_dir(XDG_DATA_HOME, "wlip");
-        dir = tofree;
-    }
-    if (dir == NULL)
-        return FAIL;
-    if (mkdir(dir, 0755) == -1 && errno != EEXIST)
-    {
-        wlip_err("Error creating directory '%s'", dir);
-        free(tofree);
-        return FAIL;
-    }
+        if (dir == NULL)
+        {
+            tofree = get_base_dir(XDG_DATA_HOME, "wlip");
+            dir = tofree;
+        }
+        if (dir == NULL)
+            return FAIL;
+        if (mkdir(dir, 0755) == -1 && errno != EEXIST)
+        {
+            wlip_err("Error creating directory '%s'", dir);
+            free(tofree);
+            return FAIL;
+        }
 
-    char *path = wlip_strdup_printf("%s/history.sqlite3", dir);
+        path = wlip_strdup_printf("%s/history.sqlite3", dir);
+    }
+    else
+        path = strdup(":memory:");
 
     free(tofree);
     if (path == NULL)

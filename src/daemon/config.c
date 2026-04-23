@@ -149,6 +149,17 @@ config_parse(struct config *config, const char *config_file)
         goto fail;
     }
 
+    toml_datum_t t_persist = toml_seek(result.toptab, "wlip.persist");
+
+    config->persist = true;
+    if (t_persist.type == TOML_BOOLEAN)
+        config->max_entries = t_max_entries.u.boolean;
+    else if (t_persist.type != TOML_UNKNOWN)
+    {
+        wlip_log("Config: wlip.persist is not a boolean");
+        goto fail;
+    }
+
     toml_free(result);
     return OK;
 fail:
