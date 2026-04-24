@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "ext-data-control-v1.h"
+#include <json.h>
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <wayland-util.h>
@@ -16,6 +17,12 @@ enum database_transaction
 
 struct database_entry
 {
+    enum
+    {
+        DATABASE_ENTRY_STARRED = 1 << 0,
+        DATABASE_ENTRY_UPDATE = 1 << 1
+    } flags;
+
     int64_t id;
     int64_t creation_time; // In milliseconds
     int64_t update_time;   // In milliseconds
@@ -48,6 +55,10 @@ struct database
         sqlite3_stmt *deserialize_mime_types;
         sqlite3_stmt *deserialize_mime_type_data;
         sqlite3_stmt *deserialize_entries;
+
+        sqlite3_stmt *entry_exists;
+
+        sqlite3_stmt *delete_entry;
     } stmt;
 };
 
@@ -68,7 +79,7 @@ int database_serialize_mime_type(
     size_t           len
 );
 
-void database_offer_mime_types(
+int database_offer_mime_types(
     struct database *db, int64_t id, struct ext_data_control_source_v1 *source
 );
 sqlite3_stmt *database_deserialize_mime_type_data(
@@ -88,3 +99,15 @@ int database_deserialize_entries(
 int database_deserialize_entry(
     struct database *db, int64_t idx, struct database_entry *entry
 );
+
+void database_add_mime_types(
+    struct database *db, int64_t id, struct json_object *obj
+);
+bool database_id_exists(struct database *db, int64_t id);
+
+int
+database_save_int_setting(struct database *db, const char *key, int64_t val);
+int
+database_get_int_setting(struct database *db, const char *key, int64_t *val);
+
+int database_delete_entry(struct database *db, int64_t id);

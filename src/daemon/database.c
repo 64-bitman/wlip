@@ -28,8 +28,8 @@ static const char *SCHEMA =
     ""
     "CREATE TABLE IF NOT EXISTS Entries ("
     "   Id              INTEGER PRIMARY KEY,"
-    "   Creation_time   INTEGER NOT NULL,"
-    "   Update_time     INTEGER NOT NULL,"
+    "   Creation_time   INTEGER NOT NULL," // In ms
+    "   Update_time     INTEGER NOT NULL," // In ms
     "   Starred         BOOLEAN NOT NULL"
     ");"
     ""
@@ -142,33 +142,16 @@ database_init(struct database *db, const char *dir, struct config *config)
         return FAIL;
     }
 
-    db->config = config;
-
-    // Apply relevant config options to "Settings" table
-    char *settings_statement_fmt =
-        "INSERT OR REPLACE INTO Settings (Key, Value) "
-        "    VALUES ('Max_entries', %" PRId64 ");";
-    char *settings_statement =
-        wlip_strdup_printf(settings_statement_fmt, config->max_entries);
-
-    if (settings_statement == NULL ||
-        sqlite3_exec(db->handle, settings_statement, NULL, NULL, &err_msg) !=
-            SQLITE_OK)
-    {
-        wlip_log("Error executing database settings: %s", err_msg);
-
-        free(settings_statement);
-        sqlite3_free(err_msg);
-        sqlite3_close(db->handle);
-        return FAIL;
-    }
-    free(settings_statement);
-
     if (database_prepare_statements(db) == FAIL)
     {
         sqlite3_close(db->handle);
         return FAIL;
     }
+
+    // Apply relevant config options to "Settings" table
+    database_save_int_setting(db, "Max_entries", config->max_entries);
+
+    db->config = config;
 
     return OK;
 }
@@ -232,8 +215,10 @@ database_prepare_statements(struct database *db)
         ) != SQLITE_OK)
         goto fail;
 
-    statement = "UPDATE Entries SET Update_time = ?, Starred = ? "
-                "   WHERE Id = ?;";
+    statement = "UPDATE Entries SET "
+                "   Update_time = COALESCE(?, Update_time), "
+                "   Starred = COALESCE(?, Starred) "
+                "WHERE Id = ?;";
     if (sqlite3_prepare_v2(
             db->handle, statement, -1, &db->stmt.update_entry, NULL
         ) != SQLITE_OK)
@@ -274,6 +259,18 @@ database_prepare_statements(struct database *db)
                 "   ORDER BY Id DESC LIMIT ? OFFSET ?;";
     if (sqlite3_prepare_v2(
             db->handle, statement, -1, &db->stmt.deserialize_entries, NULL
+        ) != SQLITE_OK)
+        goto fail;
+
+    statement = "SELECT 1 FROM Entries WHERE Id = ?;";
+    if (sqlite3_prepare_v2(
+            db->handle, statement, -1, &db->stmt.entry_exists, NULL
+        ) != SQLITE_OK)
+        goto fail;
+
+    statement = "DELETE FROM Entries WHERE Id = ?;";
+    if (sqlite3_prepare_v2(
+            db->handle, statement, -1, &db->stmt.delete_entry, NULL
         ) != SQLITE_OK)
         goto fail;
 
@@ -320,6 +317,12 @@ database_finalize_statements(struct database *db)
         sqlite3_finalize(db->stmt.deserialize_mime_type_data);
     if (db->stmt.deserialize_entries != NULL)
         sqlite3_finalize(db->stmt.deserialize_entries);
+
+    if (db->stmt.entry_exists != NULL)
+        sqlite3_finalize(db->stmt.entry_exists);
+
+    if (db->stmt.delete_entry != NULL)
+        sqlite3_finalize(db->stmt.delete_entry);
 }
 
 /*
@@ -379,13 +382,15 @@ database_serialize_entry(struct database *db, struct database_entry *entry)
     if (entry != NULL)
     {
         stmt = db->stmt.update_entry;
-        sqlite3_bind_int64(stmt, 1, entry->update_time);
-        sqlite3_bind_int(stmt, 2, entry->starred);
+        if (entry->flags & DATABASE_ENTRY_UPDATE)
+            sqlite3_bind_int64(stmt, 1, entry->update_time);
+        if (entry->flags & DATABASE_ENTRY_STARRED)
+            sqlite3_bind_int(stmt, 2, entry->starred);
         sqlite3_bind_int64(stmt, 3, entry->id);
     }
     else
     {
-        int64_t t = get_time_ns(CLOCK_REALTIME) / 1000000;
+        int64_t t = get_time_ns(CLOCK_REALTIME) / 1000000; //
 
         stmt = db->stmt.serialize_entry;
         sqlite3_bind_int64(stmt, 1, t);
@@ -487,15 +492,17 @@ database_serialize_mime_type(
 }
 
 /*
- * Make the source offer the mime types associated with the entry "id".
+ * Make the source offer the mime types associated with the entry "id". Returns
+ * OK on success and FAIL on failure.
  */
-void
+int
 database_offer_mime_types(
     struct database *db, int64_t id, struct ext_data_control_source_v1 *source
 )
 {
     sqlite3_stmt *stmt = db->stmt.deserialize_mime_types;
     int           ret;
+    bool          did = false;
 
     sqlite3_bind_int64(stmt, 1, id);
 
@@ -504,15 +511,20 @@ database_offer_mime_types(
         const char *mime_type = (char *)sqlite3_column_text(stmt, 0);
 
         ext_data_control_source_v1_offer(source, mime_type);
+        did = true;
     }
 
     sqlite3_reset(stmt);
 
     if (ret != SQLITE_DONE)
+    {
         wlip_log(
             "Error deserializing mime types from database: %s",
             sqlite3_errmsg(db->handle)
         );
+        return FAIL;
+    }
+    return did ? OK : FAIL;
 }
 
 /*
@@ -529,13 +541,15 @@ database_deserialize_mime_type_data(
     sqlite3_bind_int64(stmt, 1, id);
     sqlite3_bind_text(stmt, 2, mime_type, -1, SQLITE_STATIC);
 
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        return stmt;
+    int ret = sqlite3_step(stmt);
 
-    wlip_log(
-        "Error deserializing mime type data from database: %s",
-        sqlite3_errmsg(db->handle)
-    );
+    if (ret == SQLITE_ROW)
+        return stmt;
+    else if (ret != SQLITE_DONE)
+        wlip_log(
+            "Error deserializing mime type data from database: %s",
+            sqlite3_errmsg(db->handle)
+        );
     sqlite3_reset(stmt);
     return NULL;
 }
@@ -606,7 +620,8 @@ fail:
 
 /*
  * Return info of entries starting at "start" up to "n" entries, calling
- * "callback" for each entry. Returns OK on success and FAIL on failure.
+ * "callback" for each entry. If "n" is -1, then there is no limit. Returns OK
+ * on success and FAIL on failure.
  */
 int
 database_deserialize_entries(
@@ -620,6 +635,9 @@ database_deserialize_entries(
     sqlite3_stmt *stmt = db->stmt.deserialize_entries;
     int           ret;
     bool          did = false;
+
+    if (n == -1)
+        n = INT64_MAX;
 
     sqlite3_bind_int64(stmt, 1, n);
     sqlite3_bind_int64(stmt, 2, start);
@@ -651,7 +669,7 @@ database_deserialize_entries(
     return did ? OK : FAIL;
 }
 
-void
+static void
 deserialize_callback(struct database_entry *entry, void *udata)
 {
     struct database_entry *store = udata;
@@ -671,4 +689,135 @@ database_deserialize_entry(
     return database_deserialize_entries(
         db, idx, 1, deserialize_callback, entry
     );
+}
+
+/*
+ * Add mime types to JSON object "obj" for entry "id". Each mime type will have
+ * a value of null.
+ */
+void
+database_add_mime_types(
+    struct database *db, int64_t id, struct json_object *obj
+)
+{
+    sqlite3_stmt *stmt = db->stmt.deserialize_mime_types;
+    int           ret;
+
+    sqlite3_bind_int64(stmt, 1, id);
+
+    while ((ret = sqlite3_step(stmt)) == SQLITE_ROW)
+    {
+        const char *mime_type = (char *)sqlite3_column_text(stmt, 0);
+
+        json_object_object_add(obj, mime_type, NULL);
+    }
+
+    sqlite3_reset(stmt);
+
+    if (ret != SQLITE_DONE)
+        wlip_log(
+            "Error deserializing mime types from database: %s",
+            sqlite3_errmsg(db->handle)
+        );
+}
+
+/*
+ * Return true if "id" exists in database.
+ */
+bool
+database_id_exists(struct database *db, int64_t id)
+{
+
+    sqlite3_stmt *stmt = db->stmt.entry_exists;
+
+    sqlite3_bind_int64(stmt, 1, id);
+
+    int ret = sqlite3_step(stmt);
+
+    sqlite3_reset(stmt);
+
+    return ret == SQLITE_ROW;
+}
+
+/*
+ * Save the given key "key" with integer value "val" in the "Settings" table.
+ */
+int
+database_save_int_setting(struct database *db, const char *key, int64_t val)
+{
+    sqlite3_stmt *stmt = db->stmt.save_setting;
+
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, val);
+
+    int ret = sqlite3_step(stmt);
+
+    sqlite3_reset(stmt);
+    if (ret != SQLITE_DONE)
+    {
+        wlip_log(
+            "Error saving integer key '%s' into database: %s",
+            key,
+            sqlite3_errmsg(db->handle)
+        );
+        return FAIL;
+    }
+
+    return OK;
+}
+
+/*
+ * Get the saved integer setting from the database, if any. Returns OK on
+ * success and FAIL on failure.
+ */
+int
+database_get_int_setting(struct database *db, const char *key, int64_t *val)
+{
+    sqlite3_stmt *stmt = db->stmt.get_setting;
+
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+
+    int ret = sqlite3_step(stmt);
+
+    if (ret != SQLITE_ROW)
+    {
+        sqlite3_reset(stmt);
+        wlip_log(
+            "Error getting integer key '%s' from database: %s",
+            key,
+            sqlite3_errmsg(db->handle)
+        );
+        return FAIL;
+    }
+
+    *val = sqlite3_column_int64(stmt, 0);
+    sqlite3_reset(stmt);
+
+    return OK;
+}
+
+/*
+ * Delete entry "id" from database. Returns OK on success and FAIL on failure.
+ */
+int
+database_delete_entry(struct database *db, int64_t id)
+{
+    sqlite3_stmt *stmt = db->stmt.delete_entry;
+
+    sqlite3_bind_int64(stmt, 1, id);
+
+    int ret = sqlite3_step(stmt);
+
+    sqlite3_reset(stmt);
+    if (ret != SQLITE_DONE)
+    {
+        wlip_log(
+            "Error deleting entry %" PRId64 ": %s",
+            id,
+            sqlite3_errmsg(db->handle)
+        );
+        return FAIL;
+    }
+
+    return OK;
 }

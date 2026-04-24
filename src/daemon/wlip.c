@@ -52,11 +52,19 @@ wlip_init(struct wlip *wlip, char *config_dir, char *database_dir)
     wlip->config_directory = config_dir;
     wlip->database_directory = database_dir;
 
-    struct database_entry entry;
+    struct database_entry entry = {0};
+    int64_t               id = -1;
 
     // Load entry from database if any
-    if (database_deserialize_entry(&wlip->database, 0, &entry) == OK)
-        wayland_set_selection(&wlip->wayland, entry.id);
+    if (database_get_int_setting(&wlip->database, "Last_entry", &id) == FAIL)
+        // Use most recent entry
+        if (database_deserialize_entry(&wlip->database, 0, &entry) == OK)
+        {
+            id = entry.id;
+            database_save_int_setting(&wlip->database, "Last_entry", id);
+        }
+
+    wayland_set_selection(&wlip->wayland, id);
 
     return OK;
 }
@@ -99,6 +107,10 @@ wlip_run(struct wlip *wlip)
     sa.sa_handler = signal_handler;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+
+    // Ignore SIGPIPE signal
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &sa, NULL);
 
 #define MAX_IPC_CONNECTIONS 10
     struct pollfd pfds[2 + MAX_IPC_CONNECTIONS];

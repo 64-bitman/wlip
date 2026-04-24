@@ -157,6 +157,20 @@ write_data(int fd, const uint8_t *data, size_t len)
 }
 
 /*
+ * Send JSON "obj" over to client as a string. Returns OK on success and FAIL on
+ * failure.
+ */
+int
+send_json(int fd, struct json_object *obj)
+{
+    size_t      len;
+    const char *str =
+        json_object_to_json_string_length(obj, JSON_C_TO_STRING_PLAIN, &len);
+
+    return write_data(fd, (uint8_t *)str, len);
+}
+
+/*
  * Check if "target" matches any of the regexes in arr, which must not be NULL.
  */
 bool
@@ -256,7 +270,7 @@ get_json_string(struct json_object *obj, const char *member)
 
 /*
  * Store integer value of key "member" inside object "obj" in "store". Returns
- * OK on success and FAIl on failure.
+ * OK on success and FAIL on failure.
  */
 int
 get_json_integer(struct json_object *obj, const char *member, int64_t *store)
@@ -267,6 +281,22 @@ get_json_integer(struct json_object *obj, const char *member, int64_t *store)
         return FAIL;
 
     *store = json_object_get_int64(j_obj);
+    return OK;
+}
+
+/*
+ * Store boolean value of key "member" inside object "obj" in "store". Returns
+ * OK on success and FAIL on failure.
+ */
+int
+get_json_boolean(struct json_object *obj, const char *member, bool *store)
+{
+    struct json_object *j_obj;
+
+    if (!json_object_object_get_ex(obj, member, &j_obj))
+        return FAIL;
+
+    *store = json_object_get_boolean(j_obj);
     return OK;
 }
 

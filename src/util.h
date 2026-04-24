@@ -10,6 +10,8 @@
 #define OK 0
 #define FAIL -1
 
+#define N_ELEMENTS(arr) (sizeof(arr) / sizeof(*arr))
+
 #define NUL '\0'
 
 #define STRINGIFY_DIRECT(x) #x
@@ -70,6 +72,7 @@ char   *wlip_strdup_printf(const char *fmt, ...) PRINTFLIKE(1, 2);
 char   *get_base_dir(enum base_directory type, const char *child);
 int64_t get_time_ns(clockid_t id);
 int     write_data(int fd, const uint8_t *data, size_t len);
+int     send_json(int fd, struct json_object *obj);
 bool    match_regex_array(regex_t *arr, int len, const char *target);
 
 int   create_lock(const char *path, int *lock_fd);
@@ -78,6 +81,7 @@ pid_t lock_is_locked(const char *path);
 const char *get_json_string(struct json_object *obj, const char *member);
 int
 get_json_integer(struct json_object *obj, const char *member, int64_t *store);
+int  get_json_boolean(struct json_object *obj, const char *member, bool *store);
 void add_json_integer(
     struct json_object *obj, const char *key, int64_t val, bool key_is_static
 );

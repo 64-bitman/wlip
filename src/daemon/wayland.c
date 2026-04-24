@@ -155,7 +155,7 @@ wayland_uninit(struct wayland *wayland)
 }
 
 /*
- * Sync all selections to entry "id".
+ * Sync all selections to entry "id", an id of -1 clears all selections.
  */
 void
 wayland_set_selection(struct wayland *wayland, int64_t id)
@@ -163,6 +163,7 @@ wayland_set_selection(struct wayland *wayland, int64_t id)
     struct wayland_seat *seat;
 
     wayland->entry_id = id;
+    database_save_int_setting(&wayland->wlip->database, "Last_entry", id);
 
     wl_list_for_each(seat, &wayland->seats, link)
     {
@@ -572,6 +573,13 @@ selection_event_handler(
     sel->seat->wayland->entry_id =
         wlip_new_selection(seat->wayland->wlip, offer, &seat->mime_types);
 
+    if (sel->seat->wayland->entry_id != -1)
+        database_save_int_setting(
+            &seat->wayland->wlip->database,
+            "Last_entry",
+            sel->seat->wayland->entry_id
+        );
+
     array_clear(&seat->mime_types);
 }
 
@@ -596,11 +604,15 @@ wayland_selection_own(struct wayland_selection *sel)
             return;
         }
 
-        database_offer_mime_types(
-            &sel->seat->wayland->wlip->database,
-            sel->seat->wayland->entry_id,
-            source
-        );
+        if (database_offer_mime_types(
+                &sel->seat->wayland->wlip->database,
+                sel->seat->wayland->entry_id,
+                source
+            ) == FAIL)
+        {
+            ext_data_control_source_v1_destroy(source);
+            return;
+        }
 
         ext_data_control_source_v1_add_listener(
             source, &data_source_listener, sel
@@ -638,7 +650,7 @@ data_source_event_send(
     {
         // Shouldn't happen?
         wlip_log("Entry id is -1?");
-        return;
+        goto exit;
     }
 
     sqlite3_stmt *stmt = database_deserialize_mime_type_data(

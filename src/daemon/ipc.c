@@ -15,8 +15,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define IPC_BUFSIZE 4096
-
 static int  ipc_connection_add(struct ipc *ipc, int fd);
 static void ipc_connection_free(struct ipc_connection *ct);
 static void ipc_connection_handle(struct ipc_connection *ct);
@@ -24,6 +22,15 @@ static void ipc_connection_handle(struct ipc_connection *ct);
 static void
 ipc_parse_message(struct ipc_connection *ct, struct json_object *root);
 static void ipc_handle_request_get_entry(
+    struct ipc_connection *ct, struct json_object *req
+);
+static void ipc_handle_request_edit_entry(
+    struct ipc_connection *ct, struct json_object *req
+);
+static void ipc_handle_request_set_entry(
+    struct ipc_connection *ct, struct json_object *req
+);
+static void ipc_handle_request_delete_entry(
     struct ipc_connection *ct, struct json_object *req
 );
 
@@ -259,24 +266,12 @@ ipc_connection_free(struct ipc_connection *ct)
 }
 
 /*
- * Send response "resp" to client. Returns OK on success and FAIL on failure.
- */
-static void
-ipc_connection_response(struct ipc_connection *ct, struct json_object *resp)
-{
-    size_t      len;
-    const char *str =
-        json_object_to_json_string_length(resp, JSON_C_TO_STRING_PLAIN, &len);
-
-    write_data(ct->fd, (uint8_t *)str, len);
-}
-
-/*
  * Handle new data to read for connection.
  */
 static void
 ipc_connection_handle(struct ipc_connection *ct)
 {
+#define IPC_BUFSIZE 4096
     static char buf[IPC_BUFSIZE];
     char       *ptr = buf;
     ssize_t     r = read(ct->fd, buf, IPC_BUFSIZE);
@@ -316,6 +311,7 @@ ipc_connection_handle(struct ipc_connection *ct)
             break;
         }
     }
+#undef IPC_BUFSIZE
 }
 
 static void
@@ -325,6 +321,12 @@ ipc_parse_message(struct ipc_connection *ct, struct json_object *root)
 
     if (strcmp(type, "get_entry") == 0)
         ipc_handle_request_get_entry(ct, root);
+    else if (strcmp(type, "edit_entry") == 0)
+        ipc_handle_request_edit_entry(ct, root);
+    else if (strcmp(type, "set_entry") == 0)
+        ipc_handle_request_set_entry(ct, root);
+    else if (strcmp(type, "delete_entry") == 0)
+        ipc_handle_request_delete_entry(ct, root);
 }
 
 static void
@@ -343,17 +345,28 @@ database_entry_callback(struct database_entry *info, void *udata)
     add_json_integer(resp, "update_time", info->update_time, true);
     add_json_boolean(resp, "starred", info->starred, true);
 
-    if (mime_types_req == NULL)
-        // Do not send mime type data if there are no requested mime types to
-        // send.
-        goto exit;
-
     // Each key is the mime type and value is the data of the mime type encoded
-    // in base64.
+    // in base64, otherwise null.
     struct json_object *mime_types_resp = json_object_new_object();
 
     if (mime_types_resp == NULL)
         goto exit;
+
+    // Initially set all mime types in this entry to null. Mime types requested
+    // in "mime_types_req" will have their value set to their contents.
+    database_add_mime_types(
+        &ct->ipc->wlip->database, info->id, mime_types_resp
+    );
+
+    if (mime_types_req == NULL)
+    {
+        // Do not send mime type data if there are no requested mime types to
+        // send.
+        json_object_object_add_ex(
+            resp, "mime_types", mime_types_resp, JSON_C_OBJECT_ADD_CONSTANT_KEY
+        );
+        goto exit;
+    }
 
     size_t len = json_object_array_length(mime_types_req);
 
@@ -395,7 +408,7 @@ database_entry_callback(struct database_entry *info, void *udata)
         resp, "mime_types", mime_types_resp, JSON_C_OBJECT_ADD_CONSTANT_KEY
     );
 exit:
-    ipc_connection_response(ct, resp);
+    send_json(ct->fd, resp);
     json_object_put(resp);
 }
 
@@ -429,4 +442,75 @@ ipc_handle_request_get_entry(struct ipc_connection *ct, struct json_object *req)
     );
 
     database_do_transaction(&ct->ipc->wlip->database, TRANSACTION_COMMIT);
+
+    // Send terminator response (empty object) to indicate the end
+    if (write_data(ct->fd, (uint8_t *)"{}", 2) == FAIL)
+        wlip_err("Error writing terminator response");
+}
+
+/*
+ * Handle "edit_entry" request.
+ */
+static void
+ipc_handle_request_edit_entry(
+    struct ipc_connection *ct, struct json_object *req
+)
+{
+    struct database_entry info = {0};
+
+    if (get_json_integer(req, "id", &info.id) == FAIL)
+        return;
+
+    if (get_json_boolean(req, "starred", &info.starred) == OK)
+        info.flags |= DATABASE_ENTRY_STARRED;
+
+    info.update_time = get_time_ns(CLOCK_REALTIME) / 1000000;
+    info.flags |= DATABASE_ENTRY_UPDATE;
+
+    database_serialize_entry(&ct->ipc->wlip->database, &info);
+}
+
+/*
+ * Handle "set_entry" request.
+ */
+static void
+ipc_handle_request_set_entry(struct ipc_connection *ct, struct json_object *req)
+{
+    int64_t id;
+
+    // If "id" is -1, then clear all selections
+    if (get_json_integer(req, "id", &id) == FAIL)
+        return;
+
+    // Check if ID is valid
+    if (id != -1 && !database_id_exists(&ct->ipc->wlip->database, id))
+        return;
+
+    wayland_set_selection(&ct->ipc->wlip->wayland, id);
+}
+
+/*
+ * Handle "delete_entry" request.
+ */
+static void
+ipc_handle_request_delete_entry(
+    struct ipc_connection *ct, struct json_object *req
+)
+{
+    int64_t id;
+
+    if (get_json_integer(req, "id", &id) == FAIL)
+        return;
+
+    database_delete_entry(&ct->ipc->wlip->database, id);
+
+    // If entry is the currently active, then use the previous most recent
+    // entry.
+    if (id != ct->ipc->wlip->wayland.entry_id)
+        return;
+
+    struct database_entry entry = {0};
+
+    if (database_deserialize_entry(&ct->ipc->wlip->database, 0, &entry) == OK)
+        wayland_set_selection(&ct->ipc->wlip->wayland, entry.id);
 }

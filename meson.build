@@ -27,11 +27,19 @@ gtk4_dep = dependency('glib-2.0')
 
 subdir('src')
 
+version_h = vcs_tag(
+  input: 'src/version.h.in',
+  output: 'version.h',
+  command: ['git', 'describe', '--tags', '--always', '--long'],
+  fallback: meson.project_version(),
+)
+
 wlip = executable(
   'wlip',
   'src/daemon/main.c',
   daemon_sources,
   sources,
+  version_h,
   include_directories: [includes, daemon_includes],
   dependencies: [wl_dep, json_dep, sqlite_dep],
   install: true
@@ -42,6 +50,7 @@ wlip_cli = executable(
   'src/cli/main.c',
   cli_sources,
   sources,
+  version_h,
   include_directories: [includes, cli_includes],
   dependencies: [json_dep],
   install: true
