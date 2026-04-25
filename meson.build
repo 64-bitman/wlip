@@ -21,9 +21,6 @@ includes = []
 wl_dep = dependency('wayland-client')
 json_dep = dependency('json-c')
 sqlite_dep = dependency('sqlite3')
-gtkls_dep = dependency('gtk4-layer-shell-0')
-glib_dep = dependency('gtk4')
-gtk4_dep = dependency('glib-2.0')
 
 subdir('src')
 

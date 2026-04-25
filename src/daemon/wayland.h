@@ -74,8 +74,9 @@ struct wayland
                       // synced to. If -1, then all selections are cleared.
 };
 
-int
-wayland_init(struct wayland *wayland, struct config *config, struct wlip *wlip);
+// clang-format off
+int wayland_init(struct wayland *wayland, struct config *config, struct wlip *wlip);
 void wayland_uninit(struct wayland *wayland);
 
 void wayland_set_selection(struct wayland *wayland, int64_t id);
+// clang-format on
