@@ -2,12 +2,24 @@
 #include "config.h"
 #include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <wayland-client.h>
+
+struct send_context
+{
+    sqlite3_stmt  *stmt;
+    int            remaining;
+    const uint8_t *data;
+
+    struct fdsource source;
+
+    struct wl_list link;
+};
 
 static void registry_event_global(
     void               *udata,
@@ -78,6 +90,7 @@ static void selection_event_handler(
 
 static void wayland_selection_own(struct wayland_selection *sel);
 
+static void send_context_free(struct send_context *ctx);
 static void data_source_event_send(
     void                              *udata,
     struct ext_data_control_source_v1 *proxy,
@@ -240,11 +253,18 @@ wayland_selection_init(struct wayland_selection *sel, struct wayland_seat *seat)
 {
     sel->seat = seat;
     wlip_init_timer(&sel->null_timer);
+    wl_list_init(&sel->send_contexts);
 }
 
 static void
 wayland_selection_clear(struct wayland_selection *sel)
 {
+    struct send_context *ctx, *tmp;
+
+    wl_list_for_each_safe(ctx, tmp, &sel->send_contexts, link)
+    {
+        send_context_free(ctx);
+    }
 
     if (sel->data_offer != NULL)
         ext_data_control_offer_v1_destroy(sel->data_offer);
@@ -506,10 +526,8 @@ null_selection_callback(void *udata)
     struct wayland_selection *sel = udata;
 
     if (sel->data_offer == NULL)
-    {
         // NULL selection event is valid, become the source client
         wayland_selection_own(sel);
-    }
 }
 
 /*
@@ -637,6 +655,54 @@ wayland_selection_own(struct wayland_selection *sel)
 }
 
 static void
+send_context_free(struct send_context *ctx)
+{
+    wl_list_remove(&ctx->link);
+    wlip_stop_source(&ctx->source);
+    close(ctx->source.fd);
+    free(ctx);
+}
+
+static void
+send_callback(int revents, void *udata)
+{
+    struct send_context *ctx = udata;
+
+    if (revents == 0)
+        return;
+    else if (revents & (POLLHUP | POLLERR | POLLNVAL))
+        goto stop;
+    else if (!(revents & POLLOUT))
+        // Shouldn't happen?
+        goto stop;
+
+    ssize_t w = write(ctx->source.fd, ctx->data, ctx->remaining);
+
+    if (w == -1)
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return;
+        wlip_err("Error writing data");
+        goto stop;
+    }
+    else if (w == 0)
+        return;
+
+    ctx->remaining -= w;
+    ctx->data += w;
+
+    if (ctx->remaining == 0)
+        goto stop;
+
+    return;
+stop:
+    wl_list_remove(&ctx->link);
+    wlip_stop_source(&ctx->source);
+    close(ctx->source.fd);
+    free(ctx);
+}
+
+static void
 data_source_event_send(
     void                                    *udata,
     struct ext_data_control_source_v1 *proxy UNUSED,
@@ -650,7 +716,21 @@ data_source_event_send(
     {
         // Shouldn't happen?
         wlip_log("Entry id is -1?");
-        goto exit;
+        goto fail;
+    }
+
+    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) == -1)
+    {
+        wlip_err("Error making fd non blocking");
+        goto fail;
+    }
+
+    struct send_context *ctx = malloc(sizeof(*ctx));
+
+    if (ctx == NULL)
+    {
+        wlip_err("Error allocating send context");
+        goto fail;
     }
 
     sqlite3_stmt *stmt = database_deserialize_mime_type_data(
@@ -660,17 +740,23 @@ data_source_event_send(
     );
 
     if (stmt == NULL)
-        goto exit;
+    {
+        free(ctx);
+        goto fail;
+    }
 
-    const uint8_t *data = sqlite3_column_blob(stmt, 0);
-    int            len = sqlite3_column_bytes(stmt, 0);
+    ctx->stmt = stmt;
+    ctx->data = sqlite3_column_blob(stmt, 0);
+    ctx->remaining = sqlite3_column_bytes(stmt, 0);
 
-    if (data != NULL && write_data(fd, data, len) == FAIL)
-        wlip_err("Error writing data");
+    // Send the data asynchronously
+    wl_list_insert(&sel->send_contexts, &ctx->link);
+    wlip_start_source(
+        sel->seat->wayland->wlip, &ctx->source, fd, POLLOUT, send_callback, ctx
+    );
 
-    sqlite3_reset(stmt);
-
-exit:
+    return;
+fail:
     close(fd);
 }
 

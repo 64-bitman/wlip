@@ -29,6 +29,8 @@ struct wayland_selection
 
     // Timer used to check if NULL selection event is valid
     struct timer null_timer;
+
+    struct wl_list send_contexts;
 };
 
 /*

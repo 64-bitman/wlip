@@ -21,6 +21,7 @@ int
 wlip_init(struct wlip *wlip, char *config_dir, char *database_dir)
 {
     wl_list_init(&wlip->timers);
+    wl_list_init(&wlip->sources);
 
     if (config_init(&wlip->config, config_dir) == FAIL)
         return FAIL;
@@ -112,8 +113,8 @@ wlip_run(struct wlip *wlip)
     sa.sa_handler = SIG_IGN;
     sigaction(SIGPIPE, &sa, NULL);
 
-#define MAX_IPC_CONNECTIONS 10
-    struct pollfd pfds[2 + MAX_IPC_CONNECTIONS];
+#define MAX_FDS 16
+    struct pollfd pfds[2 + MAX_FDS];
 
     pfds[0].fd = wl_display_get_fd(wlip->wayland.display);
     pfds[0].events = POLLIN;
@@ -153,9 +154,20 @@ wlip_run(struct wlip *wlip)
         if (start == -1)
             return FAIL;
 
-        int pfds_len = 2;
+        int              pfds_len = 2;
+        struct fdsource *source, *tmps;
 
-        pfds_len += ipc_set_pfds(&wlip->ipc, pfds + 2, MAX_IPC_CONNECTIONS);
+        // Add any fd sources to the event loop
+        wl_list_for_each(source, &wlip->sources, link)
+        {
+            pfds[pfds_len].fd = source->fd;
+            pfds[pfds_len].events = source->events;
+            source->pfd_idx = pfds_len;
+            pfds_len++;
+
+            if (pfds_len >= 2 + MAX_FDS)
+                break;
+        }
 
 #undef MAX_IPC_CONNECTIONS
 
@@ -204,7 +216,16 @@ wlip_run(struct wlip *wlip)
             }
         }
 
-        ipc_check_pfds(&wlip->ipc, pfds + 2);
+        wl_list_for_each_safe(source, tmps, &wlip->sources, link)
+        {
+            if (source->pfd_idx == -1)
+                continue;
+
+            int revents = pfds[source->pfd_idx].revents;
+
+            source->pfd_idx = -1;
+            source->callback(revents, source->udata);
+        }
 
         if (pfds[1].revents & (POLLHUP | POLLERR | POLLNVAL))
         {
@@ -257,6 +278,50 @@ wlip_stop_timer(struct timer *timer)
         return;
     timer->callback = NULL;
     wl_list_remove(&timer->link);
+}
+
+/*
+ * Initialize source
+ */
+void
+wlip_init_source(struct fdsource *source)
+{
+    source->callback = NULL;
+    wl_list_init(&source->link);
+}
+
+/*
+ * Start running the source
+ */
+void
+wlip_start_source(
+    struct wlip     *wlip,
+    struct fdsource *source,
+    int              fd,
+    int              events,
+    fdsource_func    callback,
+    void            *udata
+)
+{
+    source->fd = fd;
+    source->events = events;
+    source->callback = callback;
+    source->udata = udata;
+    source->pfd_idx = -1;
+
+    wl_list_insert(&wlip->sources, &source->link);
+}
+
+/*
+ * Stop running source if it is currently running.
+ */
+void
+wlip_stop_source(struct fdsource *source)
+{
+    if (source->callback == NULL)
+        return;
+    source->callback = NULL;
+    wl_list_remove(&source->link);
 }
 
 /*
@@ -315,6 +380,8 @@ wlip_new_selection(
 
         sha256_init(&sha_ctx);
 
+        // Maybe make reading the data asynchronous (do it in the event loop)?
+        // Not sure if the extra complexity is worth it...
         while (true)
         {
             ssize_t r = read(fds[0], buf, BUFSIZE);
