@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.h"
+#include "util.h"
 #include <json.h>
 #include <poll.h>
 #include <wayland-util.h>
@@ -8,15 +9,25 @@
 struct ipc;
 struct wlip;
 
+struct ipc_response
+{
+    struct json_object *resp;
+    const char         *data;
+    size_t              remaining;
+
+    struct ipc_response *next;
+};
+
 struct ipc_connection
 {
-    int fd;
-    int pfd_idx; // -1 if not set
-
     struct ipc          *ipc;
     struct json_tokener *tokener;
 
-    struct wl_list link;
+    struct ipc_response *write_queue;
+    struct ipc_response *write_queue_end;
+
+    struct fdsource source;
+    struct wl_list  link;
 };
 
 struct ipc

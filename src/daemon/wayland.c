@@ -696,9 +696,11 @@ send_callback(int revents, void *udata)
 
     return;
 stop:
+    sqlite3_reset(ctx->stmt);
+    close(ctx->source.fd);
+
     wl_list_remove(&ctx->link);
     wlip_stop_source(&ctx->source);
-    close(ctx->source.fd);
     free(ctx);
 }
 

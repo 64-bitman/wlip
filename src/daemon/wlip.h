@@ -28,33 +28,18 @@ struct wlip
     struct wl_list sources;
 };
 
+// clang-format off
 int  wlip_init(struct wlip *wlip, char *config_dir, char *database_dir);
 void wlip_uninit(struct wlip *wlip);
 int  wlip_run(struct wlip *wlip);
 
 void wlip_init_timer(struct timer *timer);
-void wlip_start_timer(
-    struct wlip  *wlip,
-    struct timer *timer,
-    int           delay,
-    timer_func    callback,
-    void         *udata
-);
+void wlip_start_timer(struct wlip *wlip, struct timer *timer, int delay, timer_func callback, void *udata);
 void wlip_stop_timer(struct timer *timer);
 
 void wlip_init_source(struct fdsource *source);
-void wlip_start_source(
-    struct wlip     *wlip,
-    struct fdsource *source,
-    int              fd,
-    int              events,
-    fdsource_func    callback,
-    void            *udata
-);
+void wlip_start_source(struct wlip *wlip, struct fdsource *source, int fd, int events, fdsource_func callback, void *udata);
 void wlip_stop_source(struct fdsource *source);
 
-int64_t wlip_new_selection(
-    struct wlip                      *wlip,
-    struct ext_data_control_offer_v1 *offer,
-    const struct wl_array            *mime_types
-);
+int64_t wlip_new_selection(struct wlip *wlip, struct ext_data_control_offer_v1 *offer, const struct wl_array *mime_types);
+// clang-format on

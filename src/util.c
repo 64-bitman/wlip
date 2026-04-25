@@ -144,33 +144,6 @@ get_time_ns(clockid_t id)
 }
 
 /*
- * Write all data to file descriptor. Returns OK on success and FAIL on failure.
- */
-int
-write_data(int fd, const uint8_t *data, size_t len)
-{
-    ssize_t w = 0;
-    while (len > 0 && (w = write(fd, data, len)) > 0)
-        len -= w;
-
-    return w == -1 ? FAIL : OK;
-}
-
-/*
- * Send JSON "obj" over to client as a string. Returns OK on success and FAIL on
- * failure.
- */
-int
-send_json(int fd, struct json_object *obj)
-{
-    size_t      len;
-    const char *str =
-        json_object_to_json_string_length(obj, JSON_C_TO_STRING_PLAIN, &len);
-
-    return write_data(fd, (uint8_t *)str, len);
-}
-
-/*
  * Check if "target" matches any of the regexes in arr, which must not be NULL.
  */
 bool

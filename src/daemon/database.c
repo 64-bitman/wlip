@@ -692,8 +692,7 @@ database_deserialize_entry(
 }
 
 /*
- * Add mime types to JSON object "obj" for entry "id". Each mime type will have
- * a value of null.
+ * Add mime types to JSON array "obj" for entry "id".
  */
 void
 database_add_mime_types(
@@ -709,7 +708,7 @@ database_add_mime_types(
     {
         const char *mime_type = (char *)sqlite3_column_text(stmt, 0);
 
-        json_object_object_add(obj, mime_type, NULL);
+        json_object_array_add(obj, json_object_new_string(mime_type));
     }
 
     sqlite3_reset(stmt);

@@ -29,7 +29,7 @@ struct database_entry
     bool    starred;
 };
 
-typedef void (*entry_func)(struct database_entry *, void *);
+typedef void (*entry_func)(struct database_entry *entry, void *udata);
 
 struct database
 {
@@ -62,52 +62,21 @@ struct database
     } stmt;
 };
 
-int  database_init(struct database *db, const char *dir, struct config *config);
+// clang-format off
+int database_init(struct database *db, const char *dir, struct config *config);
 void database_uninit(struct database *db);
-
-int
-database_do_transaction(struct database *db, enum database_transaction type);
-int64_t
-database_serialize_entry(struct database *db, struct database_entry *entry);
-
-int database_serialize_mime_type(
-    struct database *db,
-    int64_t          id,
-    const char      *mime_type,
-    const uint8_t   *data_id,
-    uint8_t         *data,
-    size_t           len
-);
-
-int database_offer_mime_types(
-    struct database *db, int64_t id, struct ext_data_control_source_v1 *source
-);
-sqlite3_stmt *database_deserialize_mime_type_data(
-    struct database *db, int64_t id, const char *mime_type
-);
-
+int database_do_transaction(struct database *db, enum database_transaction type);
+int64_t database_serialize_entry(struct database *db, struct database_entry *entry);
+int database_serialize_mime_type(struct database *db, int64_t id, const char *mime_type, const uint8_t *data_id, uint8_t *data, size_t len);
+int database_offer_mime_types(struct database *db, int64_t id, struct ext_data_control_source_v1 *source);
+sqlite3_stmt *database_deserialize_mime_type_data(struct database *db, int64_t id, const char *mime_type);
 int database_save_selection_hash(struct database *db, const uint8_t *hash);
 int database_get_selection_hash(struct database *db, uint8_t *hash);
-
-int database_deserialize_entries(
-    struct database *db,
-    int64_t          start,
-    int64_t          n,
-    entry_func       callback,
-    void            *udata
-);
-int database_deserialize_entry(
-    struct database *db, int64_t idx, struct database_entry *entry
-);
-
-void database_add_mime_types(
-    struct database *db, int64_t id, struct json_object *obj
-);
+int database_deserialize_entries(struct database *db, int64_t start, int64_t n, entry_func callback, void *udata);
+int database_deserialize_entry(struct database *db, int64_t idx, struct database_entry *entry);
+void database_add_mime_types(struct database *db, int64_t id, struct json_object *obj);
 bool database_id_exists(struct database *db, int64_t id);
-
-int
-database_save_int_setting(struct database *db, const char *key, int64_t val);
-int
-database_get_int_setting(struct database *db, const char *key, int64_t *val);
-
+int database_save_int_setting(struct database *db, const char *key, int64_t val);
+int database_get_int_setting(struct database *db, const char *key, int64_t *val);
 int database_delete_entry(struct database *db, int64_t id);
+// clang-format on

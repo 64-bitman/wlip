@@ -199,7 +199,8 @@ config_parse(struct config *config, const char *config_file)
     toml_datum_t t_max_size = toml_seek(result.toptab, "wlip.max_size");
 
     if (t_max_size.type == TOML_INT64)
-        config->max_size = t_max_size.u.int64;
+        // Maximum of 100 MB
+        config->max_size = MAX(t_max_size.u.int64, 100000000);
     else if (t_max_size.type != TOML_UNKNOWN)
     {
         wlip_log("Config: wlip.max_size is not an integer");

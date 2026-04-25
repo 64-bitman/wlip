@@ -123,7 +123,7 @@ wlip_run(struct wlip *wlip)
 
     while (SIGCOUNT == 0)
     {
-        // Find minimum timeout to use in nanoseconds
+        // Find minimum timeout to use in nanoseconds.
         int64_t       timeout_ns = -1;
         struct timer *timer, *tmp;
 
@@ -168,8 +168,6 @@ wlip_run(struct wlip *wlip)
             if (pfds_len >= 2 + MAX_FDS)
                 break;
         }
-
-#undef MAX_IPC_CONNECTIONS
 
         int ret =
             ppoll(pfds, pfds_len, timeout_ns == -1 ? NULL : &timeout, &orig);
@@ -235,6 +233,8 @@ wlip_run(struct wlip *wlip)
         else if (pfds[1].revents & POLLIN)
             ipc_accept(&wlip->ipc);
     }
+
+#undef MAX_FDS
 
     return OK;
 }

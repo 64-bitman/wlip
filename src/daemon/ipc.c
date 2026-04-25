@@ -1,7 +1,6 @@
 #include "ipc.h"
 #include "base64.h"
 #include "config.h"
-#include "database.h"
 #include "sys/socket.h"
 #include "sys/un.h"
 #include "util.h"
@@ -9,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,22 +17,13 @@
 
 static int  ipc_connection_add(struct ipc *ipc, int fd);
 static void ipc_connection_free(struct ipc_connection *ct);
-static void ipc_connection_handle(struct ipc_connection *ct);
+static void ipc_connection_handle(int revents, void *udata);
 
-static void
-ipc_parse_message(struct ipc_connection *ct, struct json_object *root);
-static void ipc_handle_request_get_entry(
-    struct ipc_connection *ct, struct json_object *req
-);
-static void ipc_handle_request_edit_entry(
-    struct ipc_connection *ct, struct json_object *req
-);
-static void ipc_handle_request_set_entry(
-    struct ipc_connection *ct, struct json_object *req
-);
-static void ipc_handle_request_delete_entry(
-    struct ipc_connection *ct, struct json_object *req
-);
+// clang-format off
+static void ipc_request_get_entry(struct ipc_connection *ct, struct json_object *req);
+static void ipc_request_set_entry(struct ipc_connection *ct, struct json_object *req);
+static void ipc_request_delete_entry(struct ipc_connection *ct, struct json_object *req);
+// clang-format on
 
 /*
  * Initialize IPC server at "socket_path". If "socket_path" is NULL, then
@@ -176,56 +167,16 @@ ipc_accept(struct ipc *ipc)
     int fd = accept(ipc->fd, NULL, NULL);
 
     if (fd == -1)
+    {
         wlip_err("Error accepting IPC client");
+        return;
+    }
 
     // Make fd non blocking
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 
     if (ipc_connection_add(ipc, fd) == FAIL)
         close(fd);
-}
-
-/*
- * Populate pollfd array and return number of slots populated.
- */
-int
-ipc_set_pfds(struct ipc *ipc, struct pollfd *pfds, int max)
-{
-    struct ipc_connection *ct;
-    int                    n = 0;
-
-    wl_list_for_each(ct, &ipc->connections, link)
-    {
-        pfds[n].fd = ct->fd;
-        pfds[n].events = POLLIN;
-        ct->pfd_idx = n;
-        n++;
-        if (n >= max)
-            break;
-    }
-
-    return n;
-}
-
-void
-ipc_check_pfds(struct ipc *ipc, struct pollfd *pfds)
-{
-    struct ipc_connection *ct, *tmp;
-
-    wl_list_for_each_safe(ct, tmp, &ipc->connections, link)
-    {
-        if (ct->pfd_idx == -1)
-            continue;
-
-        struct pollfd pfd = pfds[ct->pfd_idx];
-
-        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
-        {
-            ipc_connection_free(ct);
-        }
-        else if (pfd.revents & POLLIN)
-            ipc_connection_handle(ct);
-    }
 }
 
 /*
@@ -247,11 +198,14 @@ ipc_connection_add(struct ipc *ipc, int fd)
         return FAIL;
     }
 
-    ct->fd = fd;
-    ct->pfd_idx = -1;
     ct->ipc = ipc;
+    ct->write_queue = ct->write_queue_end = NULL;
 
     wl_list_insert(&ipc->connections, &ct->link);
+
+    wlip_start_source(
+        ipc->wlip, &ct->source, fd, POLLIN, ipc_connection_handle, ct
+    );
 
     return OK;
 }
@@ -259,8 +213,21 @@ ipc_connection_add(struct ipc *ipc, int fd)
 static void
 ipc_connection_free(struct ipc_connection *ct)
 {
+    wlip_stop_source(&ct->source);
+
+    struct ipc_response *resp = ct->write_queue;
+
+    while (resp != NULL)
+    {
+        struct ipc_response *next = resp->next;
+
+        json_object_put(resp->resp);
+        free(resp);
+        resp = next;
+    }
+
     json_tokener_free(ct->tokener);
-    close(ct->fd);
+    close(ct->source.fd);
     wl_list_remove(&ct->link);
     free(ct);
 }
@@ -269,240 +236,285 @@ ipc_connection_free(struct ipc_connection *ct)
  * Handle new data to read for connection.
  */
 static void
-ipc_connection_handle(struct ipc_connection *ct)
+ipc_connection_handle(int revents, void *udata)
 {
-#define IPC_BUFSIZE 4096
-    static char buf[IPC_BUFSIZE];
-    char       *ptr = buf;
-    ssize_t     r = read(ct->fd, buf, IPC_BUFSIZE);
+#define BUFSIZE 4096
+    struct ipc_connection *ct = udata;
+
+    if (revents == 0)
+        return;
+    else if (!(revents & POLLIN) && !(revents & POLLOUT))
+    {
+        if (revents & (POLLHUP | POLLERR | POLLNVAL))
+            ipc_connection_free(ct);
+        return;
+    }
+    else if (!(revents & POLLIN))
+        goto try_write;
+
+    static char buf[BUFSIZE];
+    ssize_t     r = read(ct->source.fd, buf, BUFSIZE);
+    size_t      left = r;
 
     if (r == -1)
     {
         wlip_err("Error reading from IPC connection");
         return;
     }
-
-    while (r > 0)
+    else if (r == 0)
     {
-        enum json_tokener_error j_err;
-        struct json_object     *root;
+        if (revents & POLLOUT)
+            goto try_write;
 
-        root = json_tokener_parse_ex(ct->tokener, ptr, r);
+        ipc_connection_free(ct);
+        return;
+    }
+
+    // Read data from buffer into JSON tokener until empty. Each request is
+    // newline delimited.
+    while (left > 0)
+    {
+        size_t      len, off = r - left;
+        const char *nl = memchr(buf + off, '\n', left);
+
+        if (nl == NULL)
+            len = left;
+        else
+            len = nl - (buf + off);
+
+        if (len == 0)
+        {
+            // Consume newline
+            left--;
+            continue;
+        }
+
+        enum json_tokener_error j_err;
+        struct json_object     *req;
+
+        req = json_tokener_parse_ex(ct->tokener, buf + off, len);
         j_err = json_tokener_get_error(ct->tokener);
 
         if (j_err == json_tokener_success)
         {
-            // Recevied a complete JSON message, execute it. if there is another
-            // JSON message after it in the buffer, then start parsing it.
-            ipc_parse_message(ct, root);
-            json_object_put(root);
+            const char *type = get_json_string(req, "type");
 
-            size_t off = json_tokener_get_parse_end(ct->tokener);
-            ptr += off;
-            r -= off;
+            if (type != NULL)
+            {
+                if (strcmp(type, "get_entry") == 0)
+                    ipc_request_get_entry(ct, req);
+                else if (strcmp(type, "set_entry") == 0)
+                    ipc_request_set_entry(ct, req);
+                else if (strcmp(type, "delete_entry") == 0)
+                    ipc_request_delete_entry(ct, req);
+            }
+            json_object_put(req);
+
+            left -= len + (nl != NULL);
+            json_tokener_reset(ct->tokener);
         }
+        else if (j_err == json_tokener_continue)
+            break;
         else
         {
-            if (j_err != json_tokener_continue)
-                wlip_log(
-                    "Error parsing JSON message: %s",
-                    json_tokener_error_desc(j_err)
-                );
+            wlip_log(
+                "Error parsing JSON message: %s", json_tokener_error_desc(j_err)
+            );
             break;
         }
     }
-#undef IPC_BUFSIZE
+#undef BUFSIZE
+
+try_write:
+    if (revents & POLLOUT)
+    {
+        // Write any pending responses from the queue
+        struct ipc_response *resp = ct->write_queue;
+        ssize_t              w;
+
+        if (resp->remaining == 0)
+            w = write(ct->source.fd, "\n", 1);
+        else
+            w = write(ct->source.fd, resp->data, resp->remaining);
+
+        if (w >= 0)
+        {
+            ct->write_queue->remaining -= w;
+
+            if (ct->write_queue->remaining > 0)
+                return;
+            else
+                w = write(ct->source.fd, "\n", 1);
+        }
+
+        if (w == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return;
+
+        // Go onto next response if any
+        if (resp == ct->write_queue_end)
+        {
+            ct->write_queue_end = NULL;
+            ct->source.events = POLLIN;
+        }
+        ct->write_queue = resp->next;
+
+        json_object_put(resp->resp);
+        free(resp);
+    }
 }
 
+/*
+ * Queue response "obj" onto the connection queue, to be sent to the client.
+ * Takes ownership of "obj".
+ */
 static void
-ipc_parse_message(struct ipc_connection *ct, struct json_object *root)
+ipc_connection_queue_response(
+    struct ipc_connection *ct, struct json_object *obj
+)
 {
-    const char *type = get_json_string(root, "type");
-
-    if (strcmp(type, "get_entry") == 0)
-        ipc_handle_request_get_entry(ct, root);
-    else if (strcmp(type, "edit_entry") == 0)
-        ipc_handle_request_edit_entry(ct, root);
-    else if (strcmp(type, "set_entry") == 0)
-        ipc_handle_request_set_entry(ct, root);
-    else if (strcmp(type, "delete_entry") == 0)
-        ipc_handle_request_delete_entry(ct, root);
-}
-
-static void
-database_entry_callback(struct database_entry *info, void *udata)
-{
-    void                 **arr = udata;
-    struct ipc_connection *ct = arr[0];
-    struct json_object    *mime_types_req = arr[1];
-    struct json_object    *resp = json_object_new_object();
+    struct ipc_response *resp = malloc(sizeof(*resp));
 
     if (resp == NULL)
         return;
 
-    add_json_integer(resp, "id", info->id, true);
-    add_json_integer(resp, "creation_time", info->creation_time, true);
-    add_json_integer(resp, "update_time", info->update_time, true);
-    add_json_boolean(resp, "starred", info->starred, true);
-
-    // Each key is the mime type and value is the data of the mime type encoded
-    // in base64, otherwise null.
-    struct json_object *mime_types_resp = json_object_new_object();
-
-    if (mime_types_resp == NULL)
-        goto exit;
-
-    // Initially set all mime types in this entry to null. Mime types requested
-    // in "mime_types_req" will have their value set to their contents.
-    database_add_mime_types(
-        &ct->ipc->wlip->database, info->id, mime_types_resp
+    resp->resp = obj;
+    resp->data = json_object_to_json_string_length(
+        obj, JSON_C_TO_STRING_PLAIN, &resp->remaining
     );
-
-    if (mime_types_req == NULL)
+    resp->next = NULL;
+    if (resp->data == NULL)
     {
-        // Do not send mime type data if there are no requested mime types to
-        // send.
-        json_object_object_add_ex(
-            resp, "mime_types", mime_types_resp, JSON_C_OBJECT_ADD_CONSTANT_KEY
-        );
-        goto exit;
+        free(resp);
+        json_object_put(obj);
+        return;
     }
 
-    size_t len = json_object_array_length(mime_types_req);
-
-    for (size_t i = 0; i < len; i++)
-    {
-        struct json_object *j_mime_type =
-            json_object_array_get_idx(mime_types_req, i);
-
-        if (j_mime_type == NULL ||
-            !json_object_is_type(j_mime_type, json_type_string))
-            continue;
-
-        const char   *mime_type = json_object_get_string(j_mime_type);
-        sqlite3_stmt *stmt = database_deserialize_mime_type_data(
-            &ct->ipc->wlip->database, info->id, mime_type
-        );
-
-        if (stmt == NULL)
-            continue;
-
-        const uint8_t *data = sqlite3_column_blob(stmt, 0);
-        int            sz = sqlite3_column_bytes(stmt, 0);
-
-        if (data != NULL)
-        {
-            char *str = malloc(b64e_size(sz) + 1);
-
-            if (str != NULL)
-            {
-                b64_encode(data, sz, (unsigned char *)str);
-                add_json_string(mime_types_resp, mime_type, str, false);
-                free(str);
-            }
-        }
-        sqlite3_reset(stmt);
-    }
-
-    json_object_object_add_ex(
-        resp, "mime_types", mime_types_resp, JSON_C_OBJECT_ADD_CONSTANT_KEY
-    );
-exit:
-    send_json(ct->fd, resp);
-    json_object_put(resp);
+    if (ct->write_queue == NULL)
+        ct->write_queue = resp;
+    if (ct->write_queue_end != NULL)
+        ct->write_queue_end->next = resp;
+    ct->write_queue_end = resp;
+    ct->source.events |= POLLOUT;
 }
 
-/*
- * Handle "get_entry" request.
- */
-static void
-ipc_handle_request_get_entry(struct ipc_connection *ct, struct json_object *req)
-{
-    int64_t start;
-    int64_t n;
-
-    if (get_json_integer(req, "start", &start) == FAIL ||
-        get_json_integer(req, "number", &n) == FAIL)
-        return;
-
-    struct json_object *j_mime_types = NULL;
-
-    json_object_object_get_ex(req, "mime_types", &j_mime_types);
-    if (!json_object_is_type(j_mime_types, json_type_array))
-        j_mime_types = NULL;
-
-    const void *udata[3] = {ct, j_mime_types};
-
-    if (database_do_transaction(&ct->ipc->wlip->database, TRANSACTION_BEGIN) ==
-        FAIL)
-        return;
-
-    database_deserialize_entries(
-        &ct->ipc->wlip->database, start, n, database_entry_callback, udata
+#define IPC_ERROR_MEMORY(ct)                                                   \
+    ipc_connection_send_error(                                                 \
+        ct, "memory", "Memory allocation failure: %s", strerror(errno)         \
     );
 
-    database_do_transaction(&ct->ipc->wlip->database, TRANSACTION_COMMIT);
-
-    // Send terminator response (empty object) to indicate the end
-    if (write_data(ct->fd, (uint8_t *)"{}", 2) == FAIL)
-        wlip_err("Error writing terminator response");
-}
-
 /*
- * Handle "edit_entry" request.
+ * Send an error response to the client, with the given error type and
+ * description.
  */
 static void
-ipc_handle_request_edit_entry(
-    struct ipc_connection *ct, struct json_object *req
+ipc_connection_send_error(
+    struct ipc_connection *ct, const char *type, const char *fmt, ...
 )
 {
-    struct database_entry info = {0};
+    struct json_object *resp = json_object_new_object();
 
-    if (get_json_integer(req, "id", &info.id) == FAIL)
+    if (resp == NULL)
         return;
 
-    if (get_json_boolean(req, "starred", &info.starred) == OK)
-        info.flags |= DATABASE_ENTRY_STARRED;
+    add_json_string(resp, "type", "error", true);
+    add_json_string(resp, "error_type", type, true);
 
-    info.update_time = get_time_ns(CLOCK_REALTIME) / 1000000;
-    info.flags |= DATABASE_ENTRY_UPDATE;
+    char   *str;
+    va_list ap;
+    int     len;
 
-    database_serialize_entry(&ct->ipc->wlip->database, &info);
+    va_start(ap, fmt);
+    len = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+
+    str = malloc(len + 1);
+    if (str == NULL)
+    {
+        json_object_put(resp);
+        return;
+    }
+
+    va_start(ap, fmt);
+    vsnprintf(str, len + 1, fmt, ap);
+    va_end(ap);
+
+    add_json_string(resp, "desc", str, true);
+    free(str);
+
+    ipc_connection_queue_response(ct, resp);
 }
 
-/*
- * Handle "set_entry" request.
- */
 static void
-ipc_handle_request_set_entry(struct ipc_connection *ct, struct json_object *req)
+ipc_request_get_entry(struct ipc_connection *ct, struct json_object *req)
 {
-    int64_t id;
+    struct database *db = &ct->ipc->wlip->database;
+    int64_t          idx;
 
-    // If "id" is -1, then clear all selections
+    if (get_json_integer(req, "index", &idx) == FAIL)
+        return;
+
+    struct database_entry entry;
+
+    if (database_deserialize_entry(db, idx, &entry) == FAIL)
+    {
+        ipc_connection_send_error(
+            ct, "deserialize", "Error deserializing entry %d", idx
+        );
+        return;
+    }
+
+    struct json_object *resp = json_object_new_object();
+
+    if (resp == NULL)
+    {
+        IPC_ERROR_MEMORY(ct);
+        return;
+    }
+
+    add_json_integer(resp, "id", entry.id, true);
+    add_json_integer(resp, "creation_time", entry.creation_time, true);
+    add_json_integer(resp, "update_time", entry.update_time, true);
+    add_json_boolean(resp, "starred", entry.starred, true);
+
+    struct json_object *arr = json_object_new_array();
+
+    if (arr != NULL)
+    {
+        database_add_mime_types(db, entry.id, arr);
+        json_object_object_add_ex(
+            resp, "mime_types", arr, JSON_C_OBJECT_ADD_CONSTANT_KEY
+        );
+    }
+
+    ipc_connection_queue_response(ct, resp);
+}
+
+static void
+ipc_request_set_entry(struct ipc_connection *ct, struct json_object *req)
+{
+    struct database *db = &ct->ipc->wlip->database;
+    int64_t          id;
+
     if (get_json_integer(req, "id", &id) == FAIL)
         return;
 
     // Check if ID is valid
-    if (id != -1 && !database_id_exists(&ct->ipc->wlip->database, id))
+    if (id != -1 && !database_id_exists(db, id))
         return;
 
     wayland_set_selection(&ct->ipc->wlip->wayland, id);
 }
 
-/*
- * Handle "delete_entry" request.
- */
 static void
-ipc_handle_request_delete_entry(
-    struct ipc_connection *ct, struct json_object *req
-)
+ipc_request_delete_entry(struct ipc_connection *ct, struct json_object *req)
 {
-    int64_t id;
+    struct database *db = &ct->ipc->wlip->database;
+    int64_t          id;
 
     if (get_json_integer(req, "id", &id) == FAIL)
         return;
 
-    database_delete_entry(&ct->ipc->wlip->database, id);
+    database_delete_entry(db, id);
 
     // If entry is the currently active, then use the previous most recent
     // entry.
@@ -511,6 +523,6 @@ ipc_handle_request_delete_entry(
 
     struct database_entry entry = {0};
 
-    if (database_deserialize_entry(&ct->ipc->wlip->database, 0, &entry) == OK)
+    if (database_deserialize_entry(db, 0, &entry) == OK)
         wayland_set_selection(&ct->ipc->wlip->wayland, entry.id);
 }
