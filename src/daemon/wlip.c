@@ -467,5 +467,8 @@ next:
         ) == FAIL)
         return -1;
 
+    if (did_something)
+        ipc_emit_event_selection(&wlip->ipc, id);
+
     return did_something ? id : -1;
 }

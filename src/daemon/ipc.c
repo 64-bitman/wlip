@@ -15,15 +15,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// clang-format off
 static int  ipc_connection_add(struct ipc *ipc, int fd);
 static void ipc_connection_free(struct ipc_connection *ct);
 static void ipc_connection_handle(int revents, void *udata);
+static void ipc_connection_queue_message(struct ipc_connection *ct, struct json_object *obj, const char *type);
 
-// clang-format off
 static void ipc_request_get_entry(struct ipc_connection *ct, struct json_object *req, int64_t serial);
 static void ipc_request_get_mime_type(struct ipc_connection *ct, struct json_object *req, int64_t serial);
 static void ipc_request_set_entry(struct ipc_connection *ct, struct json_object *req, int64_t serial);
 static void ipc_request_delete_entry(struct ipc_connection *ct, struct json_object *req, int64_t serial);
+static void ipc_request_subscribe( struct ipc_connection *ct, struct json_object *req, int64_t serial);
 // clang-format on
 
 /*
@@ -181,6 +183,68 @@ ipc_accept(struct ipc *ipc)
 }
 
 /*
+ * Emit an event to all subscribers, if "ignore" is not NULL, then the event is
+ * not sent to "ignore". Takes ownership of "args".
+ */
+void
+ipc_emit_event(
+    struct ipc            *ipc,
+    enum ipc_event         type,
+    struct json_object    *args,
+    struct ipc_connection *ignore
+)
+{
+    struct ipc_connection *ct;
+
+    switch (type)
+    {
+    case IPC_EVENT_SELECTION:
+        add_json_string(args, "event", "selection", true);
+        break;
+    case IPC_EVENT_ENTRY_CHANGED:
+        add_json_string(args, "event", "entry_changed", true);
+        break;
+    default:
+        wlip_abort("Unknown event type %d", type);
+    }
+
+    wl_list_for_each(ct, &ipc->connections, link)
+    {
+        if (ct != ignore && ct->subbed_events & type)
+        {
+            json_object_get(args);
+            ipc_connection_queue_message(ct, args, "event");
+        }
+    }
+    json_object_put(args);
+}
+
+void
+ipc_emit_event_selection(struct ipc *ipc, int64_t id)
+{
+    struct json_object *event = json_object_new_object();
+
+    if (event != NULL)
+    {
+        add_json_integer(event, "id", id, true);
+        ipc_emit_event(ipc, IPC_EVENT_SELECTION, event, NULL);
+    }
+}
+
+void
+ipc_emit_event_entry_changed(struct ipc *ipc, int64_t id, const char *change)
+{
+    struct json_object *event = json_object_new_object();
+
+    if (event != NULL)
+    {
+        add_json_integer(event, "id", id, true);
+        add_json_string(event, "change", change, true);
+        ipc_emit_event(ipc, IPC_EVENT_ENTRY_CHANGED, event, NULL);
+    }
+}
+
+/*
  * Create new connection for fd and add it, returns FAIL on failure.
  */
 static int
@@ -233,13 +297,35 @@ ipc_connection_free(struct ipc_connection *ct)
     free(ct);
 }
 
+static void
+request_handler(struct json_object *req, void *udata)
+{
+    struct ipc_connection *ct = udata;
+    const char            *type = get_json_string(req, "type");
+    int64_t                serial;
+
+    if (type != NULL && get_json_integer(req, "serial", &serial) == OK)
+    {
+        if (strcmp(type, "get_entry") == 0)
+            ipc_request_get_entry(ct, req, serial);
+        else if (strcmp(type, "get_mime_type") == 0)
+            ipc_request_get_mime_type(ct, req, serial);
+        else if (strcmp(type, "set_entry") == 0)
+            ipc_request_set_entry(ct, req, serial);
+        else if (strcmp(type, "delete_entry") == 0)
+            ipc_request_delete_entry(ct, req, serial);
+        else if (strcmp(type, "subscribe") == 0)
+            ipc_request_subscribe(ct, req, serial);
+    }
+    json_object_put(req);
+}
+
 /*
  * Handle new data to read for connection.
  */
 static void
 ipc_connection_handle(int revents, void *udata)
 {
-#define BUFSIZE 4096
     struct ipc_connection *ct = udata;
 
     if (revents == 0)
@@ -253,9 +339,8 @@ ipc_connection_handle(int revents, void *udata)
     else if (!(revents & POLLIN))
         goto try_write;
 
-    static char buf[BUFSIZE];
-    ssize_t     r = read(ct->source.fd, buf, BUFSIZE);
-    size_t      left = r;
+    static char buf[4096];
+    ssize_t     r = read(ct->source.fd, buf, 4096);
 
     if (r == -1)
     {
@@ -273,61 +358,7 @@ ipc_connection_handle(int revents, void *udata)
 
     // Read data from buffer into JSON tokener until empty. Each request is
     // newline delimited.
-    while (left > 0)
-    {
-        size_t      len, off = r - left;
-        const char *nl = memchr(buf + off, '\n', left);
-
-        if (nl == NULL)
-            len = left;
-        else
-            len = nl - (buf + off);
-
-        if (len == 0)
-        {
-            // Consume newline
-            left--;
-            continue;
-        }
-
-        enum json_tokener_error j_err;
-        struct json_object     *req;
-
-        req = json_tokener_parse_ex(ct->tokener, buf + off, len);
-        j_err = json_tokener_get_error(ct->tokener);
-
-        if (j_err == json_tokener_success)
-        {
-            const char *type = get_json_string(req, "type");
-            int64_t     serial;
-
-            if (type != NULL && get_json_integer(req, "serial", &serial) == OK)
-            {
-                if (strcmp(type, "get_entry") == 0)
-                    ipc_request_get_entry(ct, req, serial);
-                else if (strcmp(type, "get_mime_type") == 0)
-                    ipc_request_get_mime_type(ct, req, serial);
-                else if (strcmp(type, "set_entry") == 0)
-                    ipc_request_set_entry(ct, req, serial);
-                else if (strcmp(type, "delete_entry") == 0)
-                    ipc_request_delete_entry(ct, req, serial);
-            }
-            json_object_put(req);
-
-            left -= len + (nl != NULL);
-            json_tokener_reset(ct->tokener);
-        }
-        else if (j_err == json_tokener_continue)
-            break;
-        else
-        {
-            wlip_log(
-                "Error parsing JSON message: %s", json_tokener_error_desc(j_err)
-            );
-            break;
-        }
-    }
-#undef BUFSIZE
+    process_json_buffer(buf, r, ct->tokener, request_handler, ct);
 
 try_write:
     if (revents & POLLOUT)
@@ -371,15 +402,12 @@ try_write:
 }
 
 /*
- * Queue response "obj" onto the connection queue, to be sent to the client.
+ * Queue message "obj" onto the connection queue, to be sent to the client.
  * Takes ownership of "obj".
  */
 static void
-ipc_connection_queue_response(
-    struct ipc_connection *ct,
-    struct json_object    *obj,
-    const char            *type,
-    int64_t                serial
+ipc_connection_queue_message(
+    struct ipc_connection *ct, struct json_object *obj, const char *type
 )
 {
     struct ipc_response *resp = malloc(sizeof(*resp));
@@ -388,7 +416,6 @@ ipc_connection_queue_response(
         return;
 
     add_json_string(obj, "type", type, true);
-    add_json_integer(obj, "serial", serial, true);
 
     resp->resp = obj;
     resp->data = json_object_to_json_string_length(
@@ -408,6 +435,18 @@ ipc_connection_queue_response(
         ct->write_queue_end->next = resp;
     ct->write_queue_end = resp;
     ct->source.events |= POLLOUT;
+}
+
+static void
+ipc_connection_queue_response(
+    struct ipc_connection *ct,
+    struct json_object    *obj,
+    const char            *type,
+    int64_t                serial
+)
+{
+    add_json_integer(obj, "serial", serial, true);
+    ipc_connection_queue_message(ct, obj, type);
 }
 
 /*
@@ -478,21 +517,29 @@ ipc_request_get_entry(
     struct ipc_connection *ct, struct json_object *req, int64_t serial
 )
 {
-    struct database *db = &ct->ipc->wlip->database;
-    int64_t          idx;
+    struct database      *db = &ct->ipc->wlip->database;
+    int64_t               idx, id;
+    struct database_entry entry;
 
     if (get_json_integer(req, "index", &idx) == FAIL)
     {
-        ipc_connection_send_error(ct, serial, "index", "Invalid entry index");
-        return;
+        if (get_json_integer(req, "id", &id) == FAIL)
+        {
+            IPC_ERROR_ID(ct, serial);
+            return;
+        }
+        else if (database_deserialize_entry_id(db, id, &entry) == FAIL)
+        {
+            ipc_connection_send_error(
+                ct, serial, "deserialize", "Error deserializing entry %d", idx
+            );
+            return;
+        }
     }
-
-    struct database_entry entry;
-
-    if (database_deserialize_entry(db, idx, &entry) == FAIL)
+    else if (database_deserialize_entry(db, idx, &entry) == FAIL)
     {
         ipc_connection_send_error(
-            ct, serial, "deserialize", "Error deserializing entry %d", idx
+            ct, serial, "deserialize", "Error deserializing entry idx %d", idx
         );
         return;
     }
@@ -624,7 +671,8 @@ ipc_request_delete_entry(
         return;
     }
 
-    database_delete_entry(db, id);
+    if (database_delete_entry(db, id) == OK)
+        ipc_emit_event_entry_changed(ct->ipc, id, "delete");
 
     // If entry is the currently active, then use the previous most recent
     // entry.
@@ -642,4 +690,30 @@ ipc_request_delete_entry(
         ipc_connection_send_error(
             ct, serial, "deserialize", "Error deleting entry %d", id
         );
+}
+
+static void
+ipc_request_subscribe(
+    struct ipc_connection *ct, struct json_object *req, int64_t serial
+)
+{
+    const char    *event_name = get_json_string(req, "event");
+    enum ipc_event event = IPC_EVENT_NONE;
+
+    if (event_name != NULL)
+    {
+        if (strcmp(event_name, "selection") == 0)
+            event = IPC_EVENT_SELECTION;
+        if (strcmp(event_name, "entry_changed") == 0)
+            event = IPC_EVENT_ENTRY_CHANGED;
+    }
+
+    if (event == IPC_EVENT_NONE)
+    {
+        ipc_connection_send_error(ct, serial, "event", "Unknown event");
+        return;
+    }
+
+    ct->subbed_events |= event;
+    ipc_connection_send_success(ct, serial);
 }

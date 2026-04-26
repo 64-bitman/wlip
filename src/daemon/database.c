@@ -262,6 +262,13 @@ database_prepare_statements(struct database *db)
         ) != SQLITE_OK)
         goto fail;
 
+    statement = "SELECT Creation_time, Update_time, Starred FROM Entries"
+                "   WHERE Id = ?;";
+    if (sqlite3_prepare_v2(
+            db->handle, statement, -1, &db->stmt.deserialize_entry, NULL
+        ) != SQLITE_OK)
+        goto fail;
+
     statement = "SELECT 1 FROM Entries WHERE Id = ?;";
     if (sqlite3_prepare_v2(
             db->handle, statement, -1, &db->stmt.entry_exists, NULL
@@ -317,6 +324,8 @@ database_finalize_statements(struct database *db)
         sqlite3_finalize(db->stmt.deserialize_mime_type_data);
     if (db->stmt.deserialize_entries != NULL)
         sqlite3_finalize(db->stmt.deserialize_entries);
+    if (db->stmt.deserialize_entry != NULL)
+        sqlite3_finalize(db->stmt.deserialize_entry);
 
     if (db->stmt.entry_exists != NULL)
         sqlite3_finalize(db->stmt.entry_exists);
@@ -689,6 +698,35 @@ database_deserialize_entry(
     return database_deserialize_entries(
         db, idx, 1, deserialize_callback, entry
     );
+}
+
+/*
+ * Return info of entry with ID "id". Returns OK on success and FAIL on failure.
+ */
+int
+database_deserialize_entry_id(
+    struct database *db, int64_t id, struct database_entry *entry
+)
+{
+    sqlite3_stmt *stmt = db->stmt.deserialize_entry;
+    int           ret;
+
+    sqlite3_bind_int64(stmt, 1, id);
+
+    ret = sqlite3_step(stmt);
+    if (ret != SQLITE_ROW)
+    {
+        sqlite3_reset(stmt);
+        return FAIL;
+    }
+
+    entry->id = id;
+    entry->creation_time = sqlite3_column_int64(stmt, 1);
+    entry->update_time = sqlite3_column_int64(stmt, 2);
+    entry->starred = sqlite3_column_int(stmt, 3);
+    sqlite3_reset(stmt);
+
+    return OK;
 }
 
 /*

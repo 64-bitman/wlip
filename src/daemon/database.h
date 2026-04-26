@@ -55,6 +55,7 @@ struct database
         sqlite3_stmt *deserialize_mime_types;
         sqlite3_stmt *deserialize_mime_type_data;
         sqlite3_stmt *deserialize_entries;
+        sqlite3_stmt *deserialize_entry;
 
         sqlite3_stmt *entry_exists;
 
@@ -74,6 +75,7 @@ int database_save_selection_hash(struct database *db, const uint8_t *hash);
 int database_get_selection_hash(struct database *db, uint8_t *hash);
 int database_deserialize_entries(struct database *db, int64_t start, int64_t n, entry_func callback, void *udata);
 int database_deserialize_entry(struct database *db, int64_t idx, struct database_entry *entry);
+int database_deserialize_entry_id(struct database *db, int64_t id, struct database_entry *entry);
 void database_add_mime_types(struct database *db, int64_t id, struct json_object *obj);
 bool database_id_exists(struct database *db, int64_t id);
 int database_save_int_setting(struct database *db, const char *key, int64_t val);
