@@ -243,8 +243,8 @@ database_prepare_statements(struct database *db)
         ) != SQLITE_OK)
         goto fail;
 
-    statement = "SELECT Data.Data FROM Data LEFT JOIN Mime_types "
-                "   ON Mime_types.Data_id = Data.Data_id WHERE "
+    statement = "SELECT Data.Data FROM Mime_types LEFT JOIN Data ON "
+                "   Data.Data_id = Mime_types.Data_id WHERE "
                 "       Mime_types.Id = ? AND Mime_types.Mime_type = ?;";
     if (sqlite3_prepare_v2(
             db->handle,
@@ -819,11 +819,13 @@ database_get_int_setting(struct database *db, const char *key, int64_t *val)
     if (ret != SQLITE_ROW)
     {
         sqlite3_reset(stmt);
-        wlip_log(
-            "Error getting integer key '%s' from database: %s",
-            key,
-            sqlite3_errmsg(db->handle)
-        );
+
+        if (ret != SQLITE_DONE)
+            wlip_log(
+                "Error getting integer key '%s' from database: %s",
+                key,
+                sqlite3_errmsg(db->handle)
+            );
         return FAIL;
     }
 

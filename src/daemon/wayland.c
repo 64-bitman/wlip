@@ -751,6 +751,13 @@ data_source_event_send(
     ctx->stmt = stmt;
     ctx->data = sqlite3_column_blob(stmt, 0);
     ctx->remaining = sqlite3_column_bytes(stmt, 0);
+    if (ctx->data == NULL || ctx->remaining == 0)
+    {
+        // May happen if Data_id row in Mime_types table is NULL.
+        free(ctx);
+        sqlite3_reset(stmt);
+        goto fail;
+    }
 
     // Send the data asynchronously
     wl_list_insert(&sel->send_contexts, &ctx->link);

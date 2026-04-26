@@ -1,8 +1,6 @@
 #include "ipc.h"
 #include "base64.h"
 #include "config.h"
-#include "sys/socket.h"
-#include "sys/un.h"
 #include "util.h"
 #include "wlip.h"
 #include <errno.h>
@@ -12,7 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 // clang-format off
@@ -376,7 +376,7 @@ try_write:
         {
             resp->remaining -= w;
 
-            if (ct->write_queue->remaining > 0)
+            if (resp->remaining > 0)
             {
                 resp->data += w;
                 return;
@@ -413,7 +413,10 @@ ipc_connection_queue_message(
     struct ipc_response *resp = malloc(sizeof(*resp));
 
     if (resp == NULL)
+    {
+        json_object_put(obj);
         return;
+    }
 
     add_json_string(obj, "type", type, true);
 
@@ -602,31 +605,32 @@ ipc_request_get_mime_type(
         return;
     }
 
-    const uint8_t *data = sqlite3_column_blob(stmt, 0);
-    int            len = sqlite3_column_bytes(stmt, 0);
+    const uint8_t      *data = sqlite3_column_blob(stmt, 0);
+    int                 len = sqlite3_column_bytes(stmt, 0);
+    struct json_object *resp = json_object_new_object();
 
-    if (data != NULL)
+    if (resp == NULL)
+        goto exit;
+
+    if (data != NULL && len > 0)
     {
-        unsigned int        blen = b64e_size(len) + 1;
-        char               *buf = malloc(blen);
-        struct json_object *resp = json_object_new_object();
+        char *buf = malloc(b64e_size(len) + 1);
 
         if (buf == NULL)
         {
             IPC_ERROR_MEMORY(ct, serial);
+            json_object_put(resp);
             goto exit;
         }
 
         b64_encode(data, len, (unsigned char *)buf);
         add_json_string(resp, "data", buf, true);
-        free((char *)buf);
-
-        ipc_connection_queue_response(ct, resp, "response", serial);
+        free(buf);
     }
     else
-        ipc_connection_send_error(
-            ct, serial, "deserialize", "Error deserializing mime type"
-        );
+        add_json_string(resp, "data", "", true);
+
+    ipc_connection_queue_response(ct, resp, "response", serial);
 
 exit:
     sqlite3_reset(stmt);

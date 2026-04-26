@@ -235,10 +235,26 @@ get_json_string(struct json_object *obj, const char *member)
 {
     struct json_object *j_obj;
 
-    if (!json_object_object_get_ex(obj, member, &j_obj))
+    if (!json_object_object_get_ex(obj, member, &j_obj) ||
+        !json_object_is_type(j_obj, json_type_string))
         return NULL;
 
     return json_object_get_string(j_obj);
+}
+
+/*
+ * Return length of string value of key "member" inside object "obj", else -1.
+ */
+int
+get_json_string_len(struct json_object *obj, const char *member)
+{
+    struct json_object *j_obj;
+
+    if (!json_object_object_get_ex(obj, member, &j_obj) ||
+        !json_object_is_type(j_obj, json_type_string))
+        return -1;
+
+    return json_object_get_string_len(j_obj);
 }
 
 /*
@@ -250,7 +266,8 @@ get_json_integer(struct json_object *obj, const char *member, int64_t *store)
 {
     struct json_object *j_obj;
 
-    if (!json_object_object_get_ex(obj, member, &j_obj))
+    if (!json_object_object_get_ex(obj, member, &j_obj) ||
+        !json_object_is_type(j_obj, json_type_int))
         return FAIL;
 
     *store = json_object_get_int64(j_obj);
@@ -266,7 +283,8 @@ get_json_boolean(struct json_object *obj, const char *member, bool *store)
 {
     struct json_object *j_obj;
 
-    if (!json_object_object_get_ex(obj, member, &j_obj))
+    if (!json_object_object_get_ex(obj, member, &j_obj) ||
+        !json_object_is_type(j_obj, json_type_boolean))
         return FAIL;
 
     *store = json_object_get_boolean(j_obj);
@@ -322,4 +340,113 @@ add_json_string(
         json_object_new_string(val),
         key_is_static ? JSON_C_OBJECT_ADD_CONSTANT_KEY : 0
     );
+}
+
+/*
+ * Process the buffer containing JSON messages delimited by newlines. For each
+ * message, call "callbak". Returns OK on success and FAIL on failure.
+ */
+int
+process_json_buffer(
+    const char          *buf,
+    size_t               buflen,
+    struct json_tokener *tokener,
+    json_callback        callback,
+    void                *udata
+)
+{
+    size_t left = buflen;
+
+    while (left > 0)
+    {
+        size_t      len, off = buflen - left;
+        const char *nl = memchr(buf + off, '\n', left);
+
+        if (nl == NULL)
+            len = left;
+        else
+            len = nl - (buf + off);
+
+        if (len == 0)
+        {
+            // Consume newline
+            left--;
+            continue;
+        }
+
+        enum json_tokener_error j_err;
+        struct json_object     *obj;
+
+        obj = json_tokener_parse_ex(tokener, buf + off, len);
+        j_err = json_tokener_get_error(tokener);
+
+        if (j_err == json_tokener_success)
+        {
+            callback(obj, udata);
+
+            left -= len + (nl != NULL);
+        }
+        else if (j_err == json_tokener_continue)
+            break;
+        else
+        {
+            wlip_log(
+                "Error parsing JSON message: %s", json_tokener_error_desc(j_err)
+            );
+            return FAIL;
+        }
+    }
+
+    return OK;
+}
+
+/*
+ * Return the mime type that represents "class" from the JSON array "arr".
+ * Returned string is owned by the JSON array object. Returns NULL on failure.
+ */
+const char *
+find_mime_type(struct json_object *arr, enum mime_type_class class)
+{
+    static const char *text[] = {
+        "text/plain;charset=utf-8",
+        "text/plain",
+        "TEXT",
+        "STRING",
+        "UTF8_STRING"
+    };
+    static const char *image[] = {"image/png", "image/jpeg"};
+
+    const char **mime_types;
+    int          mime_types_len;
+
+    switch (class)
+    {
+    case MIMETYPE_CLASS_TEXT:
+        mime_types = text;
+        mime_types_len = N_ELEMENTS(text);
+        break;
+    case MIMETYPE_CLASS_IMAGE:
+        mime_types = image;
+        mime_types_len = N_ELEMENTS(image);
+        break;
+    default:
+        wlip_abort("Unknown mime type class %d", class);
+    }
+
+    size_t len = json_object_array_length(arr);
+
+    for (size_t i = 0; i < len; i++)
+    {
+        struct json_object *j_mime_type = json_object_array_get_idx(arr, i);
+
+        if (json_object_is_type(j_mime_type, json_type_string))
+        {
+            const char *mime_type = json_object_get_string(j_mime_type);
+
+            for (int k = 0; k < mime_types_len; k++)
+                if (strcmp(mime_type, mime_types[k]) == 0)
+                    return mime_type;
+        }
+    }
+    return NULL;
 }

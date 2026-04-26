@@ -18,7 +18,7 @@ unsigned int b64e_size(unsigned int in_size);
 
 // in_size : the number bytes to be decoded.
 // Returns the recommended memory size to be allocated for the output buffer
-unsigned int b64d_size(unsigned int in_size);
+unsigned int b64d_size(const unsigned char *in, unsigned int len);
 
 // in : buffer of "raw" binary to be encoded.
 // in_len : number of bytes to be encoded.

@@ -55,10 +55,19 @@ b64e_size(unsigned int in_size)
 }
 
 unsigned int
-b64d_size(unsigned int in_size)
+b64d_size(const unsigned char *in, unsigned int len)
 {
+    if (len % 4 != 0)
+        return 0; // invalid base64 length
 
-    return ((3 * in_size) / 4);
+    unsigned int out = (len / 4) * 3;
+
+    if (len >= 1 && in[len - 1] == '=')
+        out--;
+    if (len >= 2 && in[len - 2] == '=')
+        out--;
+
+    return out;
 }
 
 unsigned int

@@ -15,6 +15,8 @@ daemon_includes = []
 cli_sources = []
 cli_includes = []
 
+client_sources = []
+
 sources = []
 includes = []
 
@@ -46,6 +48,7 @@ wlip_cli = executable(
   'wlipctl',
   'src/cli/main.c',
   cli_sources,
+  client_sources,
   sources,
   version_h,
   include_directories: [includes, cli_includes],

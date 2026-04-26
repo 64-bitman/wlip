@@ -56,6 +56,12 @@ enum base_directory
     XDG_RUNTIME_DIR
 };
 
+enum mime_type_class
+{
+    MIMETYPE_CLASS_TEXT,
+    MIMETYPE_CLASS_IMAGE
+};
+
 typedef void (*timer_func)(void *udata);
 /*
  * Timer source that only triggers once then is removed.
@@ -87,6 +93,9 @@ struct fdsource
     struct wl_list link;
 };
 
+// Note that callback takes ownership of "obj"
+typedef void (*json_callback)(struct json_object *obj, void *udata);
+
 // clang-format off
 void wlip_log(const char *fmt, ...) PRINTFLIKE(1, 2);
 char *wlip_strdup_printf(const char *fmt, ...) PRINTFLIKE(1, 2);
@@ -98,9 +107,13 @@ int create_lock(const char *path, int *lock_fd);
 pid_t lock_is_locked(const char *path);
 
 const char *get_json_string(struct json_object *obj, const char *member);
+int get_json_string_len(struct json_object *obj, const char *member);
 int get_json_integer(struct json_object *obj, const char *member, int64_t *store);
-int  get_json_boolean(struct json_object *obj, const char *member, bool *store);
+int get_json_boolean(struct json_object *obj, const char *member, bool *store);
 void add_json_integer(struct json_object *obj, const char *key, int64_t val, bool key_is_static);
 void add_json_boolean(struct json_object *obj, const char *key, bool val, bool key_is_static);
 void add_json_string(struct json_object *obj, const char *key, const char *val, bool key_is_static);
+
+int process_json_buffer(const char *buf, size_t buflen, struct json_tokener *tokener, json_callback callback, void *udata);
+const char *find_mime_type(struct json_object *arr, enum mime_type_class class);
 // clang-format on
