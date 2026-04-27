@@ -1,4 +1,5 @@
 #include "event.h"
+#include "log.h"
 #include "util.h"
 #include <errno.h> // IWYU pragma: keep
 #include <string.h>
@@ -33,7 +34,7 @@ eventloop_init(struct eventloop *loop)
     // Get current signal mask
     if (sigprocmask(0, NULL, &loop->sigmask) == -1)
     {
-        wlip_err("Error getting signal mask");
+        log_errerror("Error getting signal mask");
         return FAIL;
     }
 
@@ -42,7 +43,7 @@ eventloop_init(struct eventloop *loop)
         SIGARRAY = calloc(SIGRTMAX, sizeof(*SIGARRAY));
         if (SIGARRAY == NULL)
         {
-            wlip_err("Error allocating signal array");
+            log_errerror("Error allocating signal array");
             return FAIL;
         }
     }
@@ -50,7 +51,7 @@ eventloop_init(struct eventloop *loop)
     loop->epoll_fd = epoll_create1(0);
     if (loop->epoll_fd == -1)
     {
-        wlip_err("Error creating epoll fd");
+        log_errerror("Error creating epoll fd");
         if (sigarray_is_empty())
             free((void *)SIGARRAY);
         return FAIL;
@@ -58,7 +59,7 @@ eventloop_init(struct eventloop *loop)
     loop->sig_handlers = calloc(SIGRTMAX, sizeof(*loop->sig_handlers));
     if (loop->sig_handlers == NULL)
     {
-        wlip_err("Error allocating signal handler array");
+        log_errerror("Error allocating signal handler array");
         close(loop->epoll_fd);
         if (sigarray_is_empty())
             free((void *)SIGARRAY);
@@ -80,7 +81,7 @@ void
 eventloop_uninit(struct eventloop *loop)
 {
     if (!wl_list_empty(&loop->timers) || !wl_list_empty(&loop->sources))
-        wlip_log("Event loop still has sources active");
+        log_warn("Event loop still has sources active");
 
     sigprocmask(SIG_SETMASK, &loop->sigmask, NULL);
 
@@ -157,7 +158,7 @@ eventloop_poll(struct eventloop *loop)
             }
             goto check_timers;
         }
-        wlip_err("Error polling event loop");
+        log_errerror("Error polling event loop");
         return FAIL;
     }
 
@@ -231,7 +232,7 @@ eventloop_add_source(struct eventloop *loop, struct eventsource *source)
 
     if (epoll_ctl(loop->epoll_fd, EPOLL_CTL_ADD, source->fd, &ev) == -1)
     {
-        wlip_err("Error adding fd %d to epoll", source->fd);
+        log_errwarn("Error adding fd %d to epoll", source->fd);
         return FAIL;
     }
 
@@ -272,7 +273,7 @@ eventloop_add_signal(
 {
     if (loop->sig_handlers[signo].callback != NULL)
     {
-        wlip_log("Signal %d already has handler", signo);
+        log_warn("Signal %d already has handler", signo);
         return FAIL;
     }
 
@@ -283,7 +284,7 @@ eventloop_add_signal(
 
     if (sigprocmask(SIG_BLOCK, &mask, &orig) == -1)
     {
-        wlip_err("Error blocking signal %d", signo);
+        log_errwarn("Error blocking signal %d", signo);
         return FAIL;
     }
 
@@ -294,7 +295,7 @@ eventloop_add_signal(
 
     if (sigaction(signo, &sa, NULL) == -1)
     {
-        wlip_err("Error setting signal handler for %d", signo);
+        log_errwarn("Error setting signal handler for %d", signo);
         sigprocmask(SIG_SETMASK, &orig, NULL);
         return FAIL;
     }
@@ -325,7 +326,7 @@ eventloop_del_signal(struct eventloop *loop, int signo)
 
     if (sigaction(signo, &sa, NULL) < 0)
     {
-        wlip_err("Error setting signal %d to default handler", signo);
+        log_errwarn("Error setting signal %d to default handler", signo);
         return FAIL;
     }
 
@@ -335,7 +336,7 @@ eventloop_del_signal(struct eventloop *loop, int signo)
     sigaddset(&unblock, signo);
 
     if (sigprocmask(SIG_UNBLOCK, &unblock, NULL) < 0)
-        wlip_err("Error unblocking signal %d", signo);
+        log_errwarn("Error unblocking signal %d", signo);
     return OK;
 }
 
@@ -406,7 +407,7 @@ eventsource_uninit(struct eventsource *source)
 
     if (epoll_ctl(source->loop->epoll_fd, EPOLL_CTL_DEL, source->fd, NULL) ==
         -1)
-        wlip_err("Error removing fd %d from epoll", source->fd);
+        log_errwarn("Error removing fd %d from epoll", source->fd);
 
     list_clear(&source->link);
 }
@@ -433,7 +434,7 @@ eventsource_modify(struct eventsource *source, int events)
 
     if (epoll_ctl(source->loop->epoll_fd, EPOLL_CTL_MOD, source->fd, &ev) == -1)
     {
-        wlip_err("Error modifying fd %d for epoll", source->fd);
+        log_errwarn("Error modifying fd %d for epoll", source->fd);
         return FAIL;
     }
     return OK;

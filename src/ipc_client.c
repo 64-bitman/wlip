@@ -1,4 +1,5 @@
 #include "ipc_client.h"
+#include "log.h"
 #include "util.h"
 #include <errno.h> // IWYU pragma: keep
 #include <fcntl.h>
@@ -25,7 +26,7 @@ ipc_client_init(struct ipc_client *client, int epoll_fd)
 
         if (display == NULL)
         {
-            wlip_log("$WAYLAND_DISPLAY not set in environment");
+            log_error("$WAYLAND_DISPLAY not set in environment");
             return FAIL;
         }
         char *dir = get_base_dir(XDG_RUNTIME_DIR, "wlip");
@@ -41,7 +42,7 @@ ipc_client_init(struct ipc_client *client, int epoll_fd)
 
     if (fd == -1)
     {
-        wlip_err("Error creating socket");
+        log_errerror("Error creating socket");
         free(tofree);
         return FAIL;
     }
@@ -54,7 +55,7 @@ ipc_client_init(struct ipc_client *client, int epoll_fd)
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
     {
-        wlip_err("Error connecting to daemon");
+        log_errerror("Error connecting to daemon");
         return FAIL;
     }
 
@@ -114,7 +115,7 @@ ipc_client_queue_request(
     if (req == NULL)
     {
         json_object_put(obj);
-        wlip_err("Error allocating IPC request");
+        log_errwarn("Error allocating IPC request");
         return FAIL;
     }
 
@@ -124,7 +125,7 @@ ipc_client_queue_request(
 
     if (epoll_ctl(client->epoll_fd, EPOLL_CTL_MOD, client->fd, &ev) == -1)
     {
-        wlip_err("Error modifying client fd for writing for epoll");
+        log_errwarn("Error modifying client fd for writing for epoll");
         json_object_put(obj);
         free(req);
         return FAIL;
@@ -198,7 +199,7 @@ ipc_client_check(struct ipc_client *client, int revents)
 
     if (r == -1)
     {
-        wlip_err("Error reading from IPC connection");
+        log_errwarn("Error reading from IPC connection");
         return FAIL;
     }
     else if (r == 0)
@@ -255,7 +256,7 @@ try_write:
         if (client->requests == NULL &&
             epoll_ctl(client->epoll_fd, EPOLL_CTL_MOD, client->fd, &ev) == -1)
         {
-            wlip_err("Error modifying client fd for epoll");
+            log_errwarn("Error modifying client fd for epoll");
             return FAIL;
         }
 

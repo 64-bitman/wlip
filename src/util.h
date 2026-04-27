@@ -59,14 +59,6 @@
             wl_list_insert((list)->prev, elml); /* append to tail */           \
     } while (false)
 
-#define wlip_err(fmt, ...) wlip_log(fmt ": %s", ##__VA_ARGS__, strerror(errno))
-#define wlip_abort(fmt, ...)                                                   \
-    do                                                                         \
-    {                                                                          \
-        wlip_log(fmt, ##__VA_ARGS__);                                          \
-        abort();                                                               \
-    } while (false)
-
 #ifdef __GNUC__
 #    define UNUSED __attribute__((__unused__))
 #    define PRINTFLIKE(n, m) __attribute__((format(printf, n, m)))

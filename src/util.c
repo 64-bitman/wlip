@@ -1,4 +1,5 @@
 #include "util.h"
+#include "log.h"
 #include <errno.h> // IWYU pragma: keep
 #include <fcntl.h>
 #include <pwd.h>
@@ -11,17 +12,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-
-void
-wlip_log(const char *fmt, ...)
-{
-    va_list ap;
-
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
-    va_end(ap);
-}
 
 char *
 wlip_strdup_printf(const char *fmt, ...)
@@ -59,7 +49,7 @@ get_home(void)
 
         if (pwd == NULL)
         {
-            wlip_err("get_home() getpwuid");
+            log_errwarn("Error getting passwd entry");
             return NULL;
         }
 
@@ -91,7 +81,7 @@ get_base_dir(enum base_directory type, const char *child)
         xdg = getenv("XDG_RUNTIME_DIR");
         break;
     default:
-        wlip_abort("Unknown base directory %d", type);
+        log_abort("Unknown base directory %d", type);
     }
 
     if (xdg == NULL)
@@ -119,7 +109,7 @@ get_base_dir(enum base_directory type, const char *child)
 
     if (dir == NULL)
     {
-        wlip_err("Error allocating directory path");
+        log_errwarn("Error allocating directory path");
         return NULL;
     }
 
@@ -136,7 +126,7 @@ get_time_ns(clockid_t id)
 
     if (clock_gettime(id, &ts) == -1)
     {
-        wlip_err("Error getting time");
+        log_errwarn("Error getting time");
         return -1;
     }
 
@@ -170,7 +160,7 @@ create_lock(const char *path, int *lock_fd)
 
     if (fd == -1)
     {
-        wlip_err("Error creating lock file '%s'", path);
+        log_errerror("Error creating lock file '%s'", path);
         return FAIL;
     }
 
@@ -182,7 +172,7 @@ create_lock(const char *path, int *lock_fd)
 
     if (fcntl(fd, F_SETLK, &fl) == -1)
     {
-        wlip_err("Error locking file '%s'", path);
+        log_errerror("Error locking file '%s'", path);
         close(fd);
         return FAIL;
     }
@@ -207,7 +197,7 @@ lock_is_locked(const char *path)
             return -1;
         else
         {
-            wlip_err("Failed opening file '%s'", path);
+            log_errerror("Failed opening file '%s'", path);
             return 0;
         }
     }
@@ -390,7 +380,7 @@ process_json_buffer(
             break;
         else
         {
-            wlip_log(
+            log_error(
                 "Error parsing JSON message: %s", json_tokener_error_desc(j_err)
             );
             return FAIL;
@@ -430,7 +420,7 @@ find_mime_type(struct json_object *arr, enum mime_type_class class)
         mime_types_len = N_ELEMENTS(image);
         break;
     default:
-        wlip_abort("Unknown mime type class %d", class);
+        log_abort("Unknown mime type class %d", class);
     }
 
     size_t len = json_object_array_length(arr);

@@ -1,6 +1,7 @@
 #include "wayland.h"
 #include "config.h"
 #include "event.h"
+#include "log.h"
 #include "util.h"
 #include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
@@ -94,7 +95,7 @@ wayland_init(struct wayland *wayland, struct wlip *wlip)
         display_name = getenv("WAYLAND_DISPLAY");
     if (display_name == NULL)
     {
-        wlip_log("$WAYLAND_DISPLAY not set");
+        log_error("$WAYLAND_DISPLAY not set");
         return FAIL;
     }
 
@@ -105,14 +106,14 @@ wayland_init(struct wayland *wayland, struct wlip *wlip)
     wayland->display = wl_display_connect(display_name);
     if (wayland->display == NULL)
     {
-        wlip_err("Error connecting to display '%s'", display_name);
+        log_errerror("Error connecting to display '%s'", display_name);
         return FAIL;
     }
 
     wayland->registry = wl_display_get_registry(wayland->display);
     if (wayland->registry == NULL)
     {
-        wlip_err("Error creating registry");
+        log_errerror("Error creating registry");
         wl_display_disconnect(wayland->display);
         return FAIL;
     }
@@ -139,7 +140,7 @@ wayland_init(struct wayland *wayland, struct wlip *wlip)
         (ret = wl_display_flush(wayland->display)) == -1)
     {
         if (ret == -1)
-            wlip_err("Error preparing/flushing display");
+            log_errerror("Error preparing/flushing display");
 
         eventsource_uninit(&wayland->source);
         wl_registry_destroy(wayland->registry);
@@ -191,20 +192,20 @@ wayland_display_check(int revents, void *udata)
     if (wl_display_read_events(wayland->display) == -1 ||
         wl_display_dispatch_pending(wayland->display) == -1)
     {
-        wlip_err("Error reading/dispatching display events");
+        log_errerror("Error reading/dispatching display events");
         goto stop;
     }
 
     while (wl_display_prepare_read(wayland->display) == -1)
         if (wl_display_dispatch_pending(wayland->display) == -1)
         {
-            wlip_err("Error dispatching display events");
+            log_errerror("Error dispatching display events");
             goto stop;
         }
 
     if (wl_display_flush(wayland->display) == -1)
     {
-        wlip_err("Error flushing display");
+        log_errerror("Error flushing display");
         goto stop;
     }
 
@@ -221,7 +222,7 @@ wayland_display_prepare(void *udata)
 
     if (wl_display_flush(wayland->display) == -1)
     {
-        wlip_err("Error flushing display");
+        log_errerror("Error flushing display");
         wlip_uninit(wayland->wlip);
     }
 }
@@ -284,7 +285,7 @@ registry_event_global(
             wl_registry_bind(proxy, name, &wl_seat_interface, version);
 
         if (seat_proxy == NULL)
-            wlip_err("Error binding to seat proxy");
+            log_errwarn("Error binding to seat proxy");
         else if (wayland_seat_new(wayland, seat_proxy, name) == FAIL)
             wl_seat_destroy(seat_proxy);
     }
@@ -346,7 +347,7 @@ wayland_seat_new(struct wayland *wayland, struct wl_seat *proxy, uint32_t id)
 
     if (seat == NULL)
     {
-        wlip_err("Error allocating seat structure");
+        log_errwarn("Error allocating seat structure");
         return FAIL;
     }
 
@@ -421,7 +422,7 @@ wayland_seat_start(struct wayland_seat *seat)
     );
     if (seat->data_device == NULL)
     {
-        wlip_err("Error creating data device for seat '%s'", seat->name);
+        log_errwarn("Error creating data device for seat '%s'", seat->name);
         return FAIL;
     }
 
@@ -453,7 +454,7 @@ wayland_seat_get_selection(
     else if (type == SELECTION_PRIMARY)
         return &seat->sel_primary;
     else
-        wlip_abort("Unknown selection type %d", type);
+        log_abort("Unknown selection type %d", type);
 }
 
 static void
@@ -471,7 +472,7 @@ seat_event_name(void *udata, struct wl_seat *proxy UNUSED, const char *name)
     seat->name = strdup(name);
     if (seat->name == NULL)
     {
-        wlip_err("Error allocating seat name");
+        log_errwarn("Error allocating seat name");
         return;
     }
 
@@ -508,7 +509,7 @@ data_device_event_data_offer(
             offer_proxy, &data_offer_listener, seat
         ) == -1)
     {
-        wlip_err("Error listening to offer proxy");
+        log_errwarn("Error listening to offer proxy");
         ext_data_control_offer_v1_destroy(offer_proxy);
     }
 }
@@ -540,7 +541,7 @@ data_device_event_finished(
 {
     struct wayland_seat *seat = udata;
 
-    wlip_log("Seat data device finished, removing seat...");
+    log_debug("Seat data device finished, removing seat...");
     wayland_seat_free(seat);
 }
 
@@ -579,7 +580,7 @@ data_offer_event_offer(
     char *ptr = wl_array_add(&seat->mime_types, strlen(mime_type) + 1);
 
     if (ptr == NULL)
-        wlip_err("Error allocating mime types");
+        log_errwarn("Error allocating mime types");
     else
         sprintf(ptr, "%s", mime_type);
 }
@@ -677,7 +678,7 @@ wayland_selection_own(struct wayland_selection *sel)
 
         if (source == NULL)
         {
-            wlip_err("Error creating data source");
+            log_errwarn("Error creating data source");
             return;
         }
 
@@ -710,7 +711,7 @@ wayland_selection_own(struct wayland_selection *sel)
             sel->seat->data_device, source
         );
     else
-        wlip_abort("Unknown selection type %d", sel->type);
+        log_abort("Unknown selection type %d", sel->type);
 }
 
 static void
@@ -736,7 +737,7 @@ send_callback(int revents, void *udata)
     {
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return;
-        wlip_err("Error writing data");
+        log_errwarn("Error writing data");
         goto stop;
     }
     else if (w == 0)
@@ -772,13 +773,13 @@ data_source_event_send(
     if (sel->seat->wayland->entry_id == -1)
     {
         // Shouldn't happen?
-        wlip_log("Entry id is -1?");
+        log_warn("Entry id is -1?");
         goto fail;
     }
 
     if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) == -1)
     {
-        wlip_err("Error making fd non blocking");
+        log_errwarn("Error making fd non blocking");
         goto fail;
     }
 
@@ -786,7 +787,7 @@ data_source_event_send(
 
     if (ctx == NULL)
     {
-        wlip_err("Error allocating send context");
+        log_errwarn("Error allocating send context");
         goto fail;
     }
 

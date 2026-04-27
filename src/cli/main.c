@@ -1,10 +1,14 @@
 #include "base64.h"
 #include "ipc_client.h"
+#include "log.h"
 #include "util.h"
 #include <assert.h>
+#include <errno.h> // IWYU pragma: keep
 #include <getopt.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <unistd.h>
 
 static bool JSON = false;
 
@@ -45,14 +49,30 @@ main(int argc, char **argv)
 
     if (optind >= argc)
     {
-        wlip_log("Missing subcommand");
+        log_error("Missing subcommand");
         return EXIT_FAILURE;
     }
 
-    struct ipc_client client;
+    struct ipc_client  client;
+    int                epoll_fd = epoll_create1(0);
+    struct epoll_event ev;
 
-    if (ipc_client_init(&client) == FAIL)
+    if (epoll_fd == -1)
+    {
+        log_errerror("Error creating epoll fd");
         return EXIT_FAILURE;
+    }
+
+    if (ipc_client_init(&client, epoll_fd) == FAIL)
+        return EXIT_FAILURE;
+
+    ev.events = EPOLLIN;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client.fd, &ev) == -1)
+    {
+        log_errerror("Error adding fd to epoll");
+        ipc_client_uninit(&client);
+        return EXIT_FAILURE;
+    }
 
     const char *subcmd = argv[optind++];
     int         sub_argc = argc - optind + 1;
@@ -66,9 +86,10 @@ main(int argc, char **argv)
     else if (strcmp(subcmd, "set") == 0)
         ret = subcommand_set(&client, sub_argc, sub_argv);
     else
-        wlip_log("Unknown subcommand '%s'", subcmd);
+        log_error("Unknown subcommand '%s'", subcmd);
 
     ipc_client_uninit(&client);
+    close(epoll_fd);
 
     return ret;
 }
@@ -91,7 +112,7 @@ output_error(struct json_object *err)
         const char *desc = get_json_string(err, "desc");
 
         if (desc != NULL)
-            wlip_log("%s", desc);
+            log_error("%s", desc);
     }
 }
 
@@ -139,7 +160,7 @@ get_mime_type(
 
     if (buf == NULL)
     {
-        wlip_log("Error allocating %d bytes", buflen);
+        log_error("Error allocating %d bytes", buflen);
         goto exit;
     }
 
@@ -311,7 +332,7 @@ subcommand_set(struct ipc_client *client, int argc, char **argv)
 
     if (id == -1)
     {
-        wlip_log("--id not provided");
+        log_error("--id not provided");
         return EXIT_FAILURE;
     }
 

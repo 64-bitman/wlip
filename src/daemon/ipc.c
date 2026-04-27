@@ -1,6 +1,7 @@
 #include "ipc.h"
 #include "base64.h"
 #include "config.h"
+#include "log.h"
 #include "util.h"
 #include "wlip.h"
 #include <errno.h>
@@ -54,7 +55,7 @@ ipc_init(
             return FAIL;
         if (mkdir(dir, 0755) == -1 && errno != EEXIST)
         {
-            wlip_err("Error creating directory '%s'", dir);
+            log_errerror("Error creating directory '%s'", dir);
             free(dir);
             return FAIL;
         }
@@ -83,7 +84,7 @@ ipc_init(
 
     if (path == NULL || lock_path == NULL)
     {
-        wlip_err("Error allocating socket path");
+        log_errerror("Error allocating socket path");
         goto fail;
     }
 
@@ -95,7 +96,9 @@ ipc_init(
         goto fail;
     else if (pid != -1)
     {
-        wlip_log("Error starting IPC server, process %d owns socket path", pid);
+        log_error(
+            "Error starting IPC server, process %d owns socket path", pid
+        );
         goto fail;
     }
     else
@@ -111,7 +114,7 @@ ipc_init(
 
     if (fd == -1)
     {
-        wlip_err("Error creating IPC socket");
+        log_errerror("Error creating IPC socket");
         goto fail2;
     }
 
@@ -122,13 +125,13 @@ ipc_init(
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
     {
-        wlip_err("Error binding to IPC socket");
+        log_errerror("Error binding to IPC socket");
         goto fail;
     }
 
     if (listen(fd, 5) == -1)
     {
-        wlip_err("Error listening to IPC socket");
+        log_errerror("Error listening to IPC socket");
         goto fail2;
     }
 
@@ -180,7 +183,7 @@ ipc_check(int revents, void *udata)
 
     if (!(revents & EPOLLIN))
     {
-        wlip_log("IPC server lost");
+        log_warn("IPC server lost");
         eventsource_uninit(&ipc->source);
         return;
     }
@@ -189,7 +192,7 @@ ipc_check(int revents, void *udata)
 
     if (fd == -1)
     {
-        wlip_err("Error accepting IPC client");
+        log_errwarn("Error accepting IPC client");
         return;
     }
 
@@ -223,7 +226,7 @@ ipc_emit_event(
         add_json_string(args, "event", "entry_changed", true);
         break;
     default:
-        wlip_abort("Unknown event type %d", type);
+        log_abort("Unknown event type %d", type);
     }
 
     wl_list_for_each(ct, &ipc->connections, link)
@@ -276,7 +279,7 @@ ipc_connection_add(struct ipc *ipc, int fd)
     ct->tokener = json_tokener_new();
     if (ct->tokener == NULL)
     {
-        wlip_err("Error allocating JSON tokener");
+        log_errerror("Error allocating JSON tokener");
         free(ct);
         return FAIL;
     }
@@ -360,7 +363,7 @@ ipc_connection_check(int revents, void *udata)
 
     if (r == -1)
     {
-        wlip_err("Error reading from IPC connection");
+        log_errwarn("Error reading from IPC connection");
         return;
     }
     else if (r == 0)

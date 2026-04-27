@@ -1,6 +1,7 @@
 #include "database.h"
 #include "config.h"
 #include "ext-data-control-v1.h"
+#include "log.h"
 #include "sha256.h"
 #include "util.h"
 #include <errno.h>
@@ -97,7 +98,7 @@ database_init(struct database *db, const char *dir, struct config *config)
             return FAIL;
         if (mkdir(dir, 0755) == -1 && errno != EEXIST)
         {
-            wlip_err("Error creating directory '%s'", dir);
+            log_errerror("Error creating directory '%s'", dir);
             free(tofree);
             return FAIL;
         }
@@ -118,7 +119,7 @@ database_init(struct database *db, const char *dir, struct config *config)
     free(path);
     if (ret != SQLITE_OK)
     {
-        wlip_log(
+        log_error(
             "Error opening database at '%s': %s",
             dir,
             sqlite3_errmsg(db->handle)
@@ -136,7 +137,7 @@ database_init(struct database *db, const char *dir, struct config *config)
 
     if (ret != SQLITE_OK)
     {
-        wlip_log("Error executing database schema: %s", err_msg);
+        log_error("Error executing database schema: %s", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(db->handle);
         return FAIL;
@@ -283,7 +284,7 @@ database_prepare_statements(struct database *db)
 
     return OK;
 fail:
-    wlip_log(
+    log_error(
         "Error preparing database statement '%s': %s",
         statement,
         sqlite3_errmsg(db->handle)
@@ -358,7 +359,7 @@ database_do_transaction(struct database *db, enum database_transaction type)
         stmt = db->stmt.rollback_transaction;
         break;
     default:
-        wlip_abort("Unknown transaction %d", type);
+        log_abort("Unknown transaction %d", type);
         break;
     }
 
@@ -367,7 +368,7 @@ database_do_transaction(struct database *db, enum database_transaction type)
     sqlite3_reset(stmt);
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error starting database transaction %d: %s",
             type,
             sqlite3_errmsg(db->handle)
@@ -413,7 +414,7 @@ database_serialize_entry(struct database *db, struct database_entry *entry)
     if ((entry == NULL && ret != SQLITE_ROW) ||
         (entry != NULL && ret != SQLITE_DONE))
     {
-        wlip_log(
+        log_warn(
             "Error serializing entry into database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -447,7 +448,7 @@ database_serialize_data(
     sqlite3_reset(stmt);
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error serializing data into database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -490,7 +491,7 @@ database_serialize_mime_type(
     sqlite3_reset(stmt);
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error serializing mime type into database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -527,7 +528,7 @@ database_offer_mime_types(
 
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error deserializing mime types from database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -555,7 +556,7 @@ database_deserialize_mime_type_data(
     if (ret == SQLITE_ROW)
         return stmt;
     else if (ret != SQLITE_DONE)
-        wlip_log(
+        log_warn(
             "Error deserializing mime type data from database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -580,7 +581,7 @@ database_save_selection_hash(struct database *db, const uint8_t *hash)
     sqlite3_reset(stmt);
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error saving selection hash into database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -611,7 +612,7 @@ database_get_selection_hash(struct database *db, uint8_t *hash)
 
     if (size != SHA256_BLOCK_SIZE)
     {
-        wlip_log("Saved selection hash is not 32 bytes?");
+        log_warn("Saved selection hash is not 32 bytes?");
         goto fail;
     }
 
@@ -668,7 +669,7 @@ database_deserialize_entries(
 
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error deserializing entries from database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -752,7 +753,7 @@ database_add_mime_types(
     sqlite3_reset(stmt);
 
     if (ret != SQLITE_DONE)
-        wlip_log(
+        log_warn(
             "Error deserializing mime types from database: %s",
             sqlite3_errmsg(db->handle)
         );
@@ -792,7 +793,7 @@ database_save_int_setting(struct database *db, const char *key, int64_t val)
     sqlite3_reset(stmt);
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error saving integer key '%s' into database: %s",
             key,
             sqlite3_errmsg(db->handle)
@@ -821,7 +822,7 @@ database_get_int_setting(struct database *db, const char *key, int64_t *val)
         sqlite3_reset(stmt);
 
         if (ret != SQLITE_DONE)
-            wlip_log(
+            log_warn(
                 "Error getting integer key '%s' from database: %s",
                 key,
                 sqlite3_errmsg(db->handle)
@@ -850,7 +851,7 @@ database_delete_entry(struct database *db, int64_t id)
     sqlite3_reset(stmt);
     if (ret != SQLITE_DONE)
     {
-        wlip_log(
+        log_warn(
             "Error deleting entry %" PRId64 ": %s",
             id,
             sqlite3_errmsg(db->handle)

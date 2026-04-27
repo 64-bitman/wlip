@@ -2,6 +2,7 @@
 #include "config.h"
 #include "database.h"
 #include "ipc.h"
+#include "log.h"
 #include "sha256.h"
 #include "util.h"
 #include <errno.h> // IWYU pragma: keep
@@ -118,7 +119,7 @@ wlip_new_selection(
 
         if (pipe(fds) == -1)
         {
-            wlip_err("Error creating pipe");
+            log_errwarn("Error creating pipe");
             goto next;
         }
 
@@ -132,7 +133,7 @@ wlip_new_selection(
 
         if (wl_display_flush(wlip->wayland.display) == -1)
         {
-            wlip_err("Error flushing display");
+            log_errwarn("Error flushing display");
             goto fail;
         }
 
@@ -152,7 +153,7 @@ wlip_new_selection(
             if (r == -1)
             {
                 // Assume fatal
-                wlip_err("Error reading data");
+                log_errwarn("Error reading data");
                 wl_array_release(&content);
                 goto fail;
             }
@@ -162,7 +163,7 @@ wlip_new_selection(
 
                 if (ptr == NULL)
                 {
-                    wlip_err("Error allocating array");
+                    log_errwarn("Error allocating array");
                     wl_array_release(&content);
                     goto fail;
                 }

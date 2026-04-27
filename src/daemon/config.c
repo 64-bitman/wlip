@@ -1,4 +1,5 @@
 #include "config.h"
+#include "log.h"
 #include "tomlc17.h"
 #include "util.h"
 #include <errno.h> // IWYU pragma: keep
@@ -85,7 +86,7 @@ config_parse(struct config *config, const char *config_file)
 
     if (!result.ok)
     {
-        wlip_log("Error parsing config file: %s", result.errmsg);
+        log_error("Error parsing config file: %s", result.errmsg);
         return FAIL;
     }
 
@@ -98,7 +99,7 @@ config_parse(struct config *config, const char *config_file)
     }
     else if (t_display.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.display is not a string");
+        log_error("Config: wlip.display is not a string");
         goto fail;
     }
 
@@ -111,7 +112,7 @@ config_parse(struct config *config, const char *config_file)
 
         if (config->configured_seats == NULL)
         {
-            wlip_err("Error allocating config");
+            log_errerror("Error allocating config");
             goto fail;
         }
 
@@ -127,7 +128,7 @@ config_parse(struct config *config, const char *config_file)
                 seat->name = strdup(seatname);
                 if (seat->name == NULL)
                 {
-                    wlip_err("Error allocating config");
+                    log_errerror("Error allocating config");
                     goto fail;
                 }
 
@@ -143,14 +144,14 @@ config_parse(struct config *config, const char *config_file)
             }
             else
             {
-                wlip_log("Config: wlip.seats is not an table of tables");
+                log_error("Config: wlip.seats is not an table of tables");
                 goto fail;
             }
         }
     }
     else if (t_seats.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.seats is not an table of tables");
+        log_error("Config: wlip.seats is not an table of tables");
         goto fail;
     }
 
@@ -160,7 +161,7 @@ config_parse(struct config *config, const char *config_file)
         config->max_entries = t_max_entries.u.int64;
     else if (t_max_entries.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.max_entries is not an integer");
+        log_error("Config: wlip.max_entries is not an integer");
         goto fail;
     }
 
@@ -170,7 +171,7 @@ config_parse(struct config *config, const char *config_file)
         config->persist = t_persist.u.boolean;
     else if (t_persist.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.persist is not a boolean");
+        log_error("Config: wlip.persist is not a boolean");
         goto fail;
     }
 
@@ -181,7 +182,7 @@ config_parse(struct config *config, const char *config_file)
         save_pattern_array(t_allowed_mime_types, &config->allowed_mime_types);
     else if (t_allowed_mime_types.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.allowed_mime_types is not an array of strings");
+        log_error("Config: wlip.allowed_mime_types is not an array of strings");
         goto fail;
     }
 
@@ -192,7 +193,7 @@ config_parse(struct config *config, const char *config_file)
         save_pattern_array(t_blocked_mime_types, &config->blocked_mime_types);
     else if (t_blocked_mime_types.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.blocked_mime_types is not an array of strings");
+        log_error("Config: wlip.blocked_mime_types is not an array of strings");
         goto fail;
     }
 
@@ -203,7 +204,7 @@ config_parse(struct config *config, const char *config_file)
         config->max_size = MAX(t_max_size.u.int64, 100000000);
     else if (t_max_size.type != TOML_UNKNOWN)
     {
-        wlip_log("Config: wlip.max_size is not an integer");
+        log_error("Config: wlip.max_size is not an integer");
         goto fail;
     }
 
@@ -228,7 +229,7 @@ save_pattern_array(toml_datum_t arr, struct wl_array *store)
 
         if (t_pattern.type != TOML_STRING)
         {
-            wlip_log(
+            log_error(
                 "Config: wlip.allowed_mime_types is not an array of strings"
             );
             return FAIL;
@@ -242,7 +243,9 @@ save_pattern_array(toml_datum_t arr, struct wl_array *store)
             static char errbuf[128];
 
             regerror(res, &re, errbuf, 128);
-            wlip_log("Config: invalid pattern '%s': %s", t_pattern.u.s, errbuf);
+            log_error(
+                "Config: invalid pattern '%s': %s", t_pattern.u.s, errbuf
+            );
             return FAIL;
         }
 
@@ -250,7 +253,7 @@ save_pattern_array(toml_datum_t arr, struct wl_array *store)
 
         if (save == NULL)
         {
-            wlip_err("Error allocating allowed mime types array");
+            log_errerror("Error allocating allowed mime types array");
             regfree(&re);
             return FAIL;
         }

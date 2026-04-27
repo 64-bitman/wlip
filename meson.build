@@ -9,7 +9,6 @@ add_project_arguments(
     '-D_GNU_SOURCE',
     # '-fanalyzer',
     '-Wcast-align',
-    '-Wno-uninitialized',
     '-Winit-self',
     '-Wnull-dereference',
     '-Wno-float-equal',

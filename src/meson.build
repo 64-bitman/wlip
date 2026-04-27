@@ -1,4 +1,4 @@
-sources += files('util.c', 'base64.c')
+sources += files('util.c', 'base64.c', 'log.c')
 includes += include_directories('.')
 
 daemon_sources += files('event.c')

@@ -1,7 +1,9 @@
+#include "log.h"
 #include "util.h"
 #include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
 #include <getopt.h>
+#include <stdio.h> // IWYU pragma: keep
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,6 +18,7 @@ signal_handler(int signo UNUSED, void *udata)
 {
     struct wlip *wlip = udata;
 
+    log_info("Exiting...");
     wlip_uninit(wlip);
 }
 
@@ -27,6 +30,8 @@ main(int argc, char **argv)
 
     char *config_dir = NULL;
     char *database_dir = NULL;
+
+    log_init(NULL);
 
     while ((c = getopt_long(argc, argv, "", OPTIONS, &idx)) != -1)
     {
@@ -40,6 +45,9 @@ main(int argc, char **argv)
             free(database_dir);
             database_dir = strdup(optarg);
             break;
+        case 'v':
+            log_set_level(LOG_DEBUG);
+            break;
         default:
             return EXIT_FAILURE;
         }
@@ -49,8 +57,6 @@ main(int argc, char **argv)
     struct eventloop loop;
     int              ret = FAIL;
 
-    // May be interrupted by a signal here and "leak" memory, but thats just a
-    // nitpick...
     if (eventloop_init(&loop) == FAIL)
     {
         free(config_dir);
