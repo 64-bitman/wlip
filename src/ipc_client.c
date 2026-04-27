@@ -3,17 +3,18 @@
 #include <errno.h> // IWYU pragma: keep
 #include <fcntl.h>
 #include <json.h>
-#include <poll.h>
 #include <stdio.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 /*
- * Connect to wlip daemon. Returns OK on success and FAIL on failure.
+ * Connect to wlip daemon. Note that this does not add the fd to the epoll fd,
+ * which initially be set to EPOLLIN. Returns OK on success and FAIL on failure.
  */
 int
-ipc_client_init(struct ipc_client *client)
+ipc_client_init(struct ipc_client *client, int epoll_fd)
 {
     const char *path = getenv("WLIP_SOCK");
     char       *tofree = NULL;
@@ -71,6 +72,7 @@ ipc_client_init(struct ipc_client *client)
     client->requests_end = NULL;
     client->pending_requests = NULL;
     client->serial_gen = 0;
+    client->epoll_fd = epoll_fd;
 
     return OK;
 }
@@ -112,6 +114,19 @@ ipc_client_queue_request(
     if (req == NULL)
     {
         json_object_put(obj);
+        wlip_err("Error allocating IPC request");
+        return FAIL;
+    }
+
+    struct epoll_event ev;
+
+    ev.events = EPOLLIN | EPOLLOUT;
+
+    if (epoll_ctl(client->epoll_fd, EPOLL_CTL_MOD, client->fd, &ev) == -1)
+    {
+        wlip_err("Error modifying client fd for writing for epoll");
+        json_object_put(obj);
+        free(req);
         return FAIL;
     }
 
@@ -134,19 +149,6 @@ ipc_client_queue_request(
     client->requests_end = req;
 
     return OK;
-}
-
-/*
- * Should be called before polling
- */
-void
-ipc_client_prepare(struct ipc_client *client, struct pollfd *pfd)
-{
-    pfd->fd = client->fd;
-    pfd->events = POLLIN;
-
-    if (client->requests != NULL)
-        pfd->events |= POLLOUT;
 }
 
 static void
@@ -180,19 +182,15 @@ exit:
 }
 
 /*
- * Should be called after polling. Returns FAIL if connection lost.
+ * Should be called after polling (epoll). Returns FAIL if connection lost or
+ * fatal error occured.
  */
 int
 ipc_client_check(struct ipc_client *client, int revents)
 {
-    if (revents == 0)
-        return OK;
-    else if (!(revents & POLLIN) && !(revents & POLLOUT))
-    {
-        if (revents & (POLLHUP | POLLERR | POLLNVAL))
-            return FAIL;
-    }
-    else if (!(revents & POLLIN))
+    if (!(revents & EPOLLIN) && !(revents & EPOLLOUT))
+        return FAIL;
+    else if (!(revents & EPOLLIN))
         goto try_write;
 
     static char buf[4096];
@@ -205,7 +203,7 @@ ipc_client_check(struct ipc_client *client, int revents)
     }
     else if (r == 0)
     {
-        if (revents & POLLOUT || client->requests != NULL)
+        if (revents & EPOLLOUT || client->requests != NULL)
             goto try_write;
         return FAIL;
     }
@@ -250,6 +248,17 @@ try_write:
         json_object_put(req->req);
         req->req = NULL;
 
+        struct epoll_event ev;
+
+        ev.events = EPOLLIN;
+
+        if (client->requests == NULL &&
+            epoll_ctl(client->epoll_fd, EPOLL_CTL_MOD, client->fd, &ev) == -1)
+        {
+            wlip_err("Error modifying client fd for epoll");
+            return FAIL;
+        }
+
         req->next = client->pending_requests;
         client->pending_requests = req;
     }
@@ -283,17 +292,15 @@ ipc_client_roundtrip(
         ) == FAIL)
         return NULL;
 
+    struct epoll_event ev;
+
     while (resp == NULL)
     {
-        struct pollfd pfd;
-
-        ipc_client_prepare(client, &pfd);
-
-        int ret = poll(&pfd, 1, -1);
+        int ret = epoll_wait(client->epoll_fd, &ev, 1, -1);
 
         if (ret == -1)
             break;
-        if (ipc_client_check(client, pfd.revents) == FAIL)
+        if (ipc_client_check(client, ev.events) == FAIL)
             break;
     }
 

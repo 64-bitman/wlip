@@ -16,9 +16,11 @@
 #include <unistd.h>
 
 // clang-format off
+static void ipc_check(int revents, void *udata);
+
 static int  ipc_connection_add(struct ipc *ipc, int fd);
 static void ipc_connection_free(struct ipc_connection *ct);
-static void ipc_connection_handle(int revents, void *udata);
+static void ipc_connection_check(int revents, void *udata);
 static void ipc_connection_queue_message(struct ipc_connection *ct, struct json_object *obj, const char *type);
 
 static void ipc_request_get_entry(struct ipc_connection *ct, struct json_object *req, int64_t serial);
@@ -110,8 +112,7 @@ ipc_init(
     if (fd == -1)
     {
         wlip_err("Error creating IPC socket");
-        unlink(lock_path);
-        goto fail;
+        goto fail2;
     }
 
     struct sockaddr_un addr;
@@ -122,16 +123,18 @@ ipc_init(
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
     {
         wlip_err("Error binding to IPC socket");
-        unlink(lock_path);
         goto fail;
     }
 
     if (listen(fd, 5) == -1)
     {
         wlip_err("Error listening to IPC socket");
-        unlink(lock_path);
-        goto fail;
+        goto fail2;
     }
+
+    eventsource_init(&ipc->source, 0, fd, EPOLLIN, ipc_check, ipc);
+    if (eventloop_add_source(wlip->loop, &ipc->source) == FAIL)
+        goto fail2;
 
     ipc->path = path;
     ipc->lock_path = lock_path;
@@ -140,6 +143,10 @@ ipc_init(
     wl_list_init(&ipc->connections);
 
     return OK;
+fail2:
+    unlink(lock_path);
+    close(fd);
+    close(ipc->lock_fd);
 fail:
     free(path);
     free(lock_path);
@@ -156,6 +163,8 @@ ipc_uninit(struct ipc *ipc)
         ipc_connection_free(ct);
     }
 
+    eventsource_uninit(&ipc->source);
+
     close(ipc->fd);
     close(ipc->lock_fd);
     unlink(ipc->path);
@@ -164,9 +173,18 @@ ipc_uninit(struct ipc *ipc)
     free(ipc->lock_path);
 }
 
-void
-ipc_accept(struct ipc *ipc)
+static void
+ipc_check(int revents, void *udata)
 {
+    struct ipc *ipc = udata;
+
+    if (!(revents & EPOLLIN))
+    {
+        wlip_log("IPC server lost");
+        eventsource_uninit(&ipc->source);
+        return;
+    }
+
     int fd = accept(ipc->fd, NULL, NULL);
 
     if (fd == -1)
@@ -263,14 +281,18 @@ ipc_connection_add(struct ipc *ipc, int fd)
         return FAIL;
     }
 
+    eventsource_init(&ct->source, 0, fd, EPOLLIN, ipc_connection_check, ct);
+    if (eventloop_add_source(ipc->wlip->loop, &ct->source) == FAIL)
+    {
+        json_tokener_free(ct->tokener);
+        free(ct);
+        return FAIL;
+    }
+
     ct->ipc = ipc;
-    ct->write_queue = ct->write_queue_end = NULL;
+    wl_list_init(&ct->write_queue);
 
     wl_list_insert(&ipc->connections, &ct->link);
-
-    wlip_start_source(
-        ipc->wlip, &ct->source, fd, POLLIN, ipc_connection_handle, ct
-    );
 
     return OK;
 }
@@ -278,17 +300,14 @@ ipc_connection_add(struct ipc *ipc, int fd)
 static void
 ipc_connection_free(struct ipc_connection *ct)
 {
-    wlip_stop_source(&ct->source);
+    eventsource_uninit(&ct->source);
 
-    struct ipc_response *resp = ct->write_queue;
+    struct ipc_response *resp, *tmp;
 
-    while (resp != NULL)
+    wl_list_for_each_safe(resp, tmp, &ct->write_queue, link)
     {
-        struct ipc_response *next = resp->next;
-
         json_object_put(resp->resp);
         free(resp);
-        resp = next;
     }
 
     json_tokener_free(ct->tokener);
@@ -324,19 +343,16 @@ request_handler(struct json_object *req, void *udata)
  * Handle new data to read for connection.
  */
 static void
-ipc_connection_handle(int revents, void *udata)
+ipc_connection_check(int revents, void *udata)
 {
     struct ipc_connection *ct = udata;
 
-    if (revents == 0)
-        return;
-    else if (!(revents & POLLIN) && !(revents & POLLOUT))
+    if (!(revents & EPOLLIN) && !(revents & EPOLLOUT))
     {
-        if (revents & (POLLHUP | POLLERR | POLLNVAL))
-            ipc_connection_free(ct);
+        ipc_connection_free(ct);
         return;
     }
-    else if (!(revents & POLLIN))
+    else if (!(revents & EPOLLIN))
         goto try_write;
 
     static char buf[4096];
@@ -349,7 +365,7 @@ ipc_connection_handle(int revents, void *udata)
     }
     else if (r == 0)
     {
-        if (revents & POLLOUT || ct->write_queue != NULL)
+        if (revents & EPOLLOUT || !wl_list_empty(&ct->write_queue))
             goto try_write;
 
         ipc_connection_free(ct);
@@ -361,11 +377,12 @@ ipc_connection_handle(int revents, void *udata)
     process_json_buffer(buf, r, ct->tokener, request_handler, ct);
 
 try_write:
-    if (revents & POLLOUT)
+    if (revents & EPOLLOUT)
     {
         // Write any pending responses from the queue
-        struct ipc_response *resp = ct->write_queue;
-        ssize_t              w;
+        struct ipc_response *resp =
+            wl_container_of(ct->write_queue.next, resp, link);
+        ssize_t w;
 
         if (resp->remaining == 0)
             w = write(ct->source.fd, "\n", 1);
@@ -389,12 +406,16 @@ try_write:
             return;
 
         // Go onto next response if any
-        if (resp == ct->write_queue_end)
+        wl_list_remove(&resp->link);
+        if (wl_list_empty(&ct->write_queue))
         {
-            ct->write_queue_end = NULL;
-            ct->source.events = POLLIN;
+            ct->source.events = EPOLLIN;
+            if (eventsource_modify(&ct->source, EPOLLIN) == FAIL)
+            {
+                ipc_connection_free(ct);
+                return;
+            }
         }
-        ct->write_queue = resp->next;
 
         json_object_put(resp->resp);
         free(resp);
@@ -424,7 +445,6 @@ ipc_connection_queue_message(
     resp->data = json_object_to_json_string_length(
         obj, JSON_C_TO_STRING_PLAIN, &resp->remaining
     );
-    resp->next = NULL;
     if (resp->data == NULL)
     {
         free(resp);
@@ -432,12 +452,16 @@ ipc_connection_queue_message(
         return;
     }
 
-    if (ct->write_queue == NULL)
-        ct->write_queue = resp;
-    if (ct->write_queue_end != NULL)
-        ct->write_queue_end->next = resp;
-    ct->write_queue_end = resp;
-    ct->source.events |= POLLOUT;
+    if (eventsource_modify(&ct->source, EPOLLIN | EPOLLOUT) == FAIL)
+    {
+        free(resp);
+        json_object_put(obj);
+        return;
+    }
+    ct->source.events = EPOLLIN | EPOLLOUT;
+
+    // Insert after last element
+    wl_list_insert(ct->write_queue.prev, &resp->link);
 }
 
 static void

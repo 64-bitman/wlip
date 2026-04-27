@@ -22,6 +22,7 @@ struct ipc_request
 typedef void (*event_callback)(struct json_object *event, void *udata);
 struct ipc_client
 {
+    int epoll_fd;
     int fd;
 
     event_callback       event_callback;
@@ -37,12 +38,11 @@ struct ipc_client
 };
 
 // clang-format off
-int  ipc_client_init(struct ipc_client *client);
+int ipc_client_init(struct ipc_client *client, int epoll_fd);
 void ipc_client_uninit(struct ipc_client *client);
 int ipc_client_queue_request(struct ipc_client *client, struct json_object *obj, request_callback callback, void *udata);
-void ipc_client_prepare(struct ipc_client *client, struct pollfd *pfd);
 int ipc_client_check(struct ipc_client *client, int revents);
 struct json_object *ipc_client_roundtrip(struct ipc_client *client, const char *type, struct json_object *req);
 
 void ipc_request_free(struct ipc_request *req);
-// clang-format off
+// clag-format off

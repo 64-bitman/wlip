@@ -4,13 +4,10 @@
 #include "ipc.h"
 #include "sha256.h"
 #include "util.h"
-#include <errno.h>
-#include <poll.h>
-#include <signal.h>
+#include <errno.h> // IWYU pragma: keep
 #include <stdlib.h>
 #include <string.h>
-
-static volatile sig_atomic_t SIGCOUNT = 0;
+#include <sys/epoll.h>
 
 /*
  * Initialize program state structure and connect to compositor. Note that
@@ -18,14 +15,18 @@ static volatile sig_atomic_t SIGCOUNT = 0;
  * and FAIL on failure.
  */
 int
-wlip_init(struct wlip *wlip, char *config_dir, char *database_dir)
+wlip_init(
+    struct wlip      *wlip,
+    struct eventloop *loop,
+    char             *config_dir,
+    char             *database_dir
+)
 {
-    wl_list_init(&wlip->timers);
-    wl_list_init(&wlip->sources);
+    wlip->loop = loop;
 
     if (config_init(&wlip->config, config_dir) == FAIL)
         return FAIL;
-    if (wayland_init(&wlip->wayland, &wlip->config, wlip) == FAIL)
+    if (wayland_init(&wlip->wayland, wlip) == FAIL)
     {
         config_uninit(&wlip->config);
         return FAIL;
@@ -66,6 +67,7 @@ wlip_init(struct wlip *wlip, char *config_dir, char *database_dir)
         }
 
     wayland_set_selection(&wlip->wayland, id);
+    wlip->init = true;
 
     return OK;
 }
@@ -73,6 +75,8 @@ wlip_init(struct wlip *wlip, char *config_dir, char *database_dir)
 void
 wlip_uninit(struct wlip *wlip)
 {
+    if (!wlip->init)
+        return;
     config_uninit(&wlip->config);
     wayland_uninit(&wlip->wayland);
     database_uninit(&wlip->database);
@@ -80,248 +84,7 @@ wlip_uninit(struct wlip *wlip)
 
     free(wlip->config_directory);
     free(wlip->database_directory);
-}
-
-static void
-signal_handler(int signo UNUSED)
-{
-    SIGCOUNT++;
-}
-
-/*
- * Run the event loop. Returns OK on success and FAIL on failure
- */
-int
-wlip_run(struct wlip *wlip)
-{
-    sigset_t orig, block;
-
-    sigemptyset(&block);
-
-    sigaddset(&block, SIGINT);
-    sigaddset(&block, SIGTERM);
-
-    sigprocmask(SIG_BLOCK, &block, &orig);
-
-    struct sigaction sa = {0};
-
-    sa.sa_handler = signal_handler;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-
-    // Ignore SIGPIPE signal
-    sa.sa_handler = SIG_IGN;
-    sigaction(SIGPIPE, &sa, NULL);
-
-#define MAX_FDS 16
-    struct pollfd pfds[2 + MAX_FDS];
-
-    pfds[0].fd = wl_display_get_fd(wlip->wayland.display);
-    pfds[0].events = POLLIN;
-    pfds[1].fd = wlip->ipc.fd;
-    pfds[1].events = POLLIN;
-
-    while (SIGCOUNT == 0)
-    {
-        // Find minimum timeout to use in nanoseconds.
-        int64_t       timeout_ns = -1;
-        struct timer *timer, *tmp;
-
-        wl_list_for_each(timer, &wlip->timers, link)
-        {
-            if (timeout_ns == -1 || timeout_ns > timer->remaining)
-                timeout_ns = timer->remaining;
-        }
-
-        while (wl_display_prepare_read(wlip->wayland.display) == -1)
-            wl_display_dispatch_pending(wlip->wayland.display);
-
-        if (wl_display_flush(wlip->wayland.display) == -1)
-        {
-            wlip_err("Error flushing display");
-            return FAIL;
-        }
-
-        struct timespec timeout;
-
-        if (timeout_ns != -1)
-        {
-            timeout.tv_sec = timeout_ns / 1000000000LL;
-            timeout.tv_nsec = timeout_ns % 1000000000LL;
-        }
-
-        int64_t start = get_time_ns(CLOCK_MONOTONIC), end;
-        if (start == -1)
-            return FAIL;
-
-        int              pfds_len = 2;
-        struct fdsource *source, *tmps;
-
-        // Add any fd sources to the event loop
-        wl_list_for_each(source, &wlip->sources, link)
-        {
-            pfds[pfds_len].fd = source->fd;
-            pfds[pfds_len].events = source->events;
-            source->pfd_idx = pfds_len;
-            pfds_len++;
-
-            if (pfds_len >= 2 + MAX_FDS)
-                break;
-        }
-
-        int ret =
-            ppoll(pfds, pfds_len, timeout_ns == -1 ? NULL : &timeout, &orig);
-
-        if (ret == -1)
-        {
-            if (errno == EINTR)
-                continue;
-            wlip_err("Error polling display");
-            return FAIL;
-        }
-
-        if (pfds[0].revents & (POLLHUP | POLLERR | POLLNVAL))
-        {
-            wl_display_cancel_read(wlip->wayland.display);
-            break;
-        }
-
-        if (wl_display_read_events(wlip->wayland.display) == -1 ||
-            wl_display_dispatch_pending(wlip->wayland.display) == -1)
-        {
-            wlip_err("Display connection lost");
-            return FAIL;
-        }
-
-        end = get_time_ns(CLOCK_MONOTONIC);
-
-        if (end != -1)
-        {
-            int64_t elapsed = end - start;
-
-            wl_list_for_each_safe(timer, tmp, &wlip->timers, link)
-            {
-                timer->remaining -= elapsed;
-
-                if (timer->remaining <= 0)
-                {
-                    timer_func func = timer->callback;
-
-                    wl_list_remove(&timer->link);
-                    timer->callback = NULL;
-                    func(timer->udata);
-                }
-            }
-        }
-
-        wl_list_for_each_safe(source, tmps, &wlip->sources, link)
-        {
-            if (source->pfd_idx == -1)
-                continue;
-
-            int revents = pfds[source->pfd_idx].revents;
-
-            source->pfd_idx = -1;
-            source->callback(revents, source->udata);
-        }
-
-        if (pfds[1].revents & (POLLHUP | POLLERR | POLLNVAL))
-        {
-            wlip_log("IPC server lost");
-            return FAIL;
-        }
-        else if (pfds[1].revents & POLLIN)
-            ipc_accept(&wlip->ipc);
-    }
-
-#undef MAX_FDS
-
-    return OK;
-}
-
-/*
- * Initialize timer
- */
-void
-wlip_init_timer(struct timer *timer)
-{
-    timer->callback = NULL;
-    wl_list_init(&timer->link);
-}
-
-/*
- * Start running the timer for "delay" milliseconds.
- */
-void
-wlip_start_timer(
-    struct wlip  *wlip,
-    struct timer *timer,
-    int           delay,
-    timer_func    callback,
-    void         *udata
-)
-{
-    timer->remaining = delay * 1000000;
-    timer->callback = callback;
-    timer->udata = udata;
-
-    wl_list_insert(&wlip->timers, &timer->link);
-}
-
-/*
- * Stop running timer if it is currently running.
- */
-void
-wlip_stop_timer(struct timer *timer)
-{
-    if (timer->callback == NULL)
-        return;
-    timer->callback = NULL;
-    wl_list_remove(&timer->link);
-}
-
-/*
- * Initialize source
- */
-void
-wlip_init_source(struct fdsource *source)
-{
-    source->callback = NULL;
-    wl_list_init(&source->link);
-}
-
-/*
- * Start running the source
- */
-void
-wlip_start_source(
-    struct wlip     *wlip,
-    struct fdsource *source,
-    int              fd,
-    int              events,
-    fdsource_func    callback,
-    void            *udata
-)
-{
-    source->fd = fd;
-    source->events = events;
-    source->callback = callback;
-    source->udata = udata;
-    source->pfd_idx = -1;
-
-    wl_list_insert(&wlip->sources, &source->link);
-}
-
-/*
- * Stop running source if it is currently running.
- */
-void
-wlip_stop_source(struct fdsource *source)
-{
-    if (source->callback == NULL)
-        return;
-    source->callback = NULL;
-    wl_list_remove(&source->link);
+    wlip->init = false;
 }
 
 /*
@@ -345,7 +108,7 @@ wlip_new_selection(
     int64_t    id = database_serialize_entry(&wlip->database, NULL);
 
     if (id == -1)
-        goto fail;
+        goto exit;
 
     sha256_init(&sha_hash);
 
@@ -461,6 +224,7 @@ next:
         }
     }
 
+exit:
     if (database_do_transaction(
             &wlip->database,
             did_something ? TRANSACTION_COMMIT : TRANSACTION_ROLLBACK

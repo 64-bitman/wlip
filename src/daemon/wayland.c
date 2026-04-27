@@ -1,8 +1,11 @@
 #include "wayland.h"
 #include "config.h"
+#include "event.h"
+#include "util.h"
 #include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
 #include <fcntl.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,58 +19,40 @@ struct send_context
     int            remaining;
     const uint8_t *data;
 
-    struct fdsource source;
+    struct eventsource source;
 
     struct wl_list link;
 };
 
-static void registry_event_global(
-    void               *udata,
-    struct wl_registry *proxy,
-    uint32_t            name,
-    const char         *interface,
-    uint32_t version    UNUSED
-);
-static void registry_event_global_remove(
-    void *udata, struct wl_registry *proxy, uint32_t name
-);
+// clang-format off
+static void wayland_display_check(int revents, void *udata);
+static void wayland_display_prepare(void *udata);
+
+static void registry_event_global(void *udata, struct wl_registry *proxy, uint32_t name, const char *interface, uint32_t version);
+static void registry_event_global_remove(void *udata, struct wl_registry *proxy, uint32_t name);
+
 static const struct wl_registry_listener registry_listener = {
     .global = registry_event_global,
     .global_remove = registry_event_global_remove
 };
 
-static int
-wayland_seat_new(struct wayland *wayland, struct wl_seat *proxy, uint32_t id);
+static int wayland_seat_new(struct wayland *wayland, struct wl_seat *proxy, uint32_t id);
 static void wayland_seat_free(struct wayland_seat *seat);
-static int  wayland_seat_start(struct wayland_seat *seat);
+static int wayland_seat_start(struct wayland_seat *seat);
 
-static void
-seat_event_name(void *udata, struct wl_seat *proxy, const char *name);
-static void seat_event_capabilities(
-    void *udata, struct wl_seat *proxy, uint32_t capabilities
-);
+static void seat_event_name(void *udata, struct wl_seat *proxy, const char *name);
+static void seat_event_capabilities(void *udata, struct wl_seat *proxy, uint32_t capabilities);
+
 static const struct wl_seat_listener seat_listener = {
-    .name = seat_event_name, .capabilities = seat_event_capabilities
+    .name = seat_event_name,
+    .capabilities = seat_event_capabilities
 };
 
-static void data_device_event_data_offer(
-    void                              *udata,
-    struct ext_data_control_device_v1 *proxy,
-    struct ext_data_control_offer_v1  *offer_proxy
-);
-static void data_device_event_selection(
-    void                              *udata,
-    struct ext_data_control_device_v1 *proxy,
-    struct ext_data_control_offer_v1  *offer_proxy
-);
-static void data_device_event_primary_selection(
-    void                              *udata,
-    struct ext_data_control_device_v1 *proxy,
-    struct ext_data_control_offer_v1  *offer_proxy
-);
-static void data_device_event_finished(
-    void *udata, struct ext_data_control_device_v1 *proxy
-);
+static void data_device_event_data_offer(void *udata, struct ext_data_control_device_v1 *proxy, struct ext_data_control_offer_v1 *offer_proxy);
+static void data_device_event_selection(void *udata, struct ext_data_control_device_v1 *proxy, struct ext_data_control_offer_v1 *offer_proxy);
+static void data_device_event_primary_selection(void *udata, struct ext_data_control_device_v1 *proxy, struct ext_data_control_offer_v1 *offer_proxy);
+static void data_device_event_finished(void *udata, struct ext_data_control_device_v1 *proxy);
+
 static const struct ext_data_control_device_v1_listener data_device_listener = {
     .data_offer = data_device_event_data_offer,
     .selection = data_device_event_selection,
@@ -75,43 +60,35 @@ static const struct ext_data_control_device_v1_listener data_device_listener = {
     .finished = data_device_event_finished
 };
 
-static void data_offer_event_offer(
-    void *udata, struct ext_data_control_offer_v1 *proxy, const char *mime_type
-);
+static void data_offer_event_offer(void *udata, struct ext_data_control_offer_v1 *proxy, const char *mime_type);
+
 static const struct ext_data_control_offer_v1_listener data_offer_listener = {
     .offer = data_offer_event_offer
 };
 
-static void selection_event_handler(
-    struct wayland_seat              *seat,
-    struct ext_data_control_offer_v1 *offer,
-    enum wayland_selection_type       seltype
-);
+static void null_selection_callback(void *udata);
+static void selection_event_handler(struct wayland_seat *seat, struct ext_data_control_offer_v1 *offer, enum wayland_selection_type seltype);
 
 static void wayland_selection_own(struct wayland_selection *sel);
 
 static void send_context_free(struct send_context *ctx);
-static void data_source_event_send(
-    void                              *udata,
-    struct ext_data_control_source_v1 *proxy,
-    const char                        *mime_type,
-    int32_t                            fd
-);
-static void data_source_event_cancelled(
-    void *udata, struct ext_data_control_source_v1 *proxy
-);
+static void data_source_event_send(void *udata, struct ext_data_control_source_v1 *proxy, const char *mime_type, int32_t fd);
+static void data_source_event_cancelled(void *udata, struct ext_data_control_source_v1 *proxy);
+
 static const struct ext_data_control_source_v1_listener data_source_listener = {
-    .send = data_source_event_send, .cancelled = data_source_event_cancelled
+    .send = data_source_event_send,
+    .cancelled = data_source_event_cancelled
 };
+// clang-format on
 
 /*
  * Connect to Wayland compositor and starting serving the clipboard. Returns OK
  * on success and FAIL on failure.
  */
 int
-wayland_init(struct wayland *wayland, struct config *config, struct wlip *wlip)
+wayland_init(struct wayland *wayland, struct wlip *wlip)
 {
-    const char *display_name = config->display_name;
+    const char *display_name = wlip->config.display_name;
 
     if (display_name == NULL)
         display_name = getenv("WAYLAND_DISPLAY");
@@ -121,9 +98,9 @@ wayland_init(struct wayland *wayland, struct config *config, struct wlip *wlip)
         return FAIL;
     }
 
-    wayland->config = config;
     wayland->wlip = wlip;
     wl_list_init(&wayland->seats);
+    wayland->data_manager = NULL;
 
     wayland->display = wl_display_connect(display_name);
     if (wayland->display == NULL)
@@ -146,6 +123,36 @@ wayland_init(struct wayland *wayland, struct config *config, struct wlip *wlip)
     wl_registry_add_listener(wayland->registry, &registry_listener, wayland);
 
     // We will handle events when we return to the event loop
+    eventsource_init(
+        &wayland->source,
+        INT_MIN, // Wayland source must be prioritized first, so that events are
+                 // processed before we do anything else.
+        wl_display_get_fd(wayland->display),
+        EPOLLIN,
+        wayland_display_check,
+        wayland
+    );
+    int ret = 0;
+
+    if (eventloop_add_source(wlip->loop, &wayland->source) == FAIL ||
+        (ret = wl_display_prepare_read(wayland->display)) == -1 ||
+        (ret = wl_display_flush(wayland->display)) == -1)
+    {
+        if (ret == -1)
+            wlip_err("Error preparing/flushing display");
+
+        eventsource_uninit(&wayland->source);
+        wl_registry_destroy(wayland->registry);
+        wl_display_disconnect(wayland->display);
+        return FAIL;
+    }
+
+    // Must have lowest priority, so that the display is flushed only after
+    // doing everything.
+    eventprepare_init(
+        &wayland->prepare, INT_MAX, wayland_display_prepare, wayland
+    );
+    eventloop_add_prepare(wlip->loop, &wayland->prepare);
 
     return OK;
 }
@@ -154,6 +161,9 @@ void
 wayland_uninit(struct wayland *wayland)
 {
     struct wayland_seat *seat, *tmp;
+
+    eventsource_uninit(&wayland->source);
+    eventprepare_uninit(&wayland->prepare);
 
     wl_list_for_each_safe(seat, tmp, &wayland->seats, link)
     {
@@ -165,6 +175,55 @@ wayland_uninit(struct wayland *wayland)
 
     wl_registry_destroy(wayland->registry);
     wl_display_disconnect(wayland->display);
+}
+
+/*
+ * Called after polling the display.
+ */
+static void
+wayland_display_check(int revents, void *udata)
+{
+    struct wayland *wayland = udata;
+
+    if (!(revents & EPOLLIN))
+        goto stop;
+
+    if (wl_display_read_events(wayland->display) == -1 ||
+        wl_display_dispatch_pending(wayland->display) == -1)
+    {
+        wlip_err("Error reading/dispatching display events");
+        goto stop;
+    }
+
+    while (wl_display_prepare_read(wayland->display) == -1)
+        if (wl_display_dispatch_pending(wayland->display) == -1)
+        {
+            wlip_err("Error dispatching display events");
+            goto stop;
+        }
+
+    if (wl_display_flush(wayland->display) == -1)
+    {
+        wlip_err("Error flushing display");
+        goto stop;
+    }
+
+    return;
+stop:
+    wlip_uninit(wayland->wlip);
+    return;
+}
+
+static void
+wayland_display_prepare(void *udata)
+{
+    struct wayland *wayland = udata;
+
+    if (wl_display_flush(wayland->display) == -1)
+    {
+        wlip_err("Error flushing display");
+        wlip_uninit(wayland->wlip);
+    }
 }
 
 /*
@@ -208,12 +267,14 @@ registry_event_global(
             proxy, name, &ext_data_control_manager_v1_interface, 1
         );
 
-        // We may have binded to seats before this data manager global
+        // We may have binded to seats (and got seat name event) before the data
+        // manager global.
         struct wayland_seat *seat, *tmp;
 
         wl_list_for_each_safe(seat, tmp, &wayland->seats, link)
         {
-            if (!seat->active && wayland_seat_start(seat) == FAIL)
+            if (!seat->active && seat->name != NULL &&
+                wayland_seat_start(seat) == FAIL)
                 wayland_seat_free(seat);
         }
     }
@@ -253,7 +314,7 @@ static void
 wayland_selection_init(struct wayland_selection *sel, struct wayland_seat *seat)
 {
     sel->seat = seat;
-    wlip_init_timer(&sel->null_timer);
+    eventtimer_init(&sel->null_timer, 0, 1, null_selection_callback, sel);
     wl_list_init(&sel->send_contexts);
 }
 
@@ -272,7 +333,7 @@ wayland_selection_clear(struct wayland_selection *sel)
     if (sel->data_source != NULL)
         ext_data_control_source_v1_destroy(sel->data_source);
 
-    wlip_stop_timer(&sel->null_timer);
+    eventtimer_stop(&sel->null_timer);
 }
 
 /*
@@ -333,7 +394,7 @@ wayland_seat_start(struct wayland_seat *seat)
 {
     // Check if seat is configured by user. If no seats configured, then assume
     // all seats are allowed.
-    struct config *config = seat->wayland->config;
+    struct config *config = &seat->wayland->wlip->config;
 
     if (config->configured_seats != NULL)
     {
@@ -493,10 +554,11 @@ data_offer_event_offer(
     struct wayland_seat *seat = udata;
 
     // Do not save entry if mime type is configured to be blocked.
-    if (seat->wayland->config->blocked_mime_types.data != NULL &&
+    if (seat->wayland->wlip->config.blocked_mime_types.data != NULL &&
         match_regex_array(
-            seat->wayland->config->blocked_mime_types.data,
-            seat->wayland->config->blocked_mime_types.size / sizeof(regex_t),
+            seat->wayland->wlip->config.blocked_mime_types.data,
+            seat->wayland->wlip->config.blocked_mime_types.size /
+                sizeof(regex_t),
             mime_type
         ))
     {
@@ -505,10 +567,11 @@ data_offer_event_offer(
     }
 
     // Check if mime type is allowed to be saved
-    if (seat->wayland->config->allowed_mime_types.data != NULL &&
+    if (seat->wayland->wlip->config.allowed_mime_types.data != NULL &&
         !match_regex_array(
-            seat->wayland->config->allowed_mime_types.data,
-            seat->wayland->config->allowed_mime_types.size / sizeof(regex_t),
+            seat->wayland->wlip->config.allowed_mime_types.data,
+            seat->wayland->wlip->config.allowed_mime_types.size /
+                sizeof(regex_t),
             mime_type
         ))
         return;
@@ -529,6 +592,7 @@ null_selection_callback(void *udata)
     if (sel->data_offer == NULL)
         // NULL selection event is valid, become the source client
         wayland_selection_own(sel);
+    eventtimer_stop(&sel->null_timer);
 }
 
 /*
@@ -579,13 +643,7 @@ selection_event_handler(
 
         // Selection has been cleared, try becoming the source client. Add a
         // delay in case it is followed up by an actual selection event.
-        wlip_start_timer(
-            sel->seat->wayland->wlip,
-            &sel->null_timer,
-            1,
-            null_selection_callback,
-            sel
-        );
+        eventloop_add_timer(sel->seat->wayland->wlip->loop, &sel->null_timer);
         return;
     }
 
@@ -659,7 +717,7 @@ static void
 send_context_free(struct send_context *ctx)
 {
     wl_list_remove(&ctx->link);
-    wlip_stop_source(&ctx->source);
+    eventsource_uninit(&ctx->source);
     close(ctx->source.fd);
     free(ctx);
 }
@@ -669,12 +727,7 @@ send_callback(int revents, void *udata)
 {
     struct send_context *ctx = udata;
 
-    if (revents == 0)
-        return;
-    else if (revents & (POLLHUP | POLLERR | POLLNVAL))
-        goto stop;
-    else if (!(revents & POLLOUT))
-        // Shouldn't happen?
+    if (!(revents & EPOLLOUT))
         goto stop;
 
     ssize_t w = write(ctx->source.fd, ctx->data, ctx->remaining);
@@ -697,11 +750,12 @@ send_callback(int revents, void *udata)
 
     return;
 stop:
+    eventsource_uninit(&ctx->source);
+
     sqlite3_reset(ctx->stmt);
     close(ctx->source.fd);
 
     wl_list_remove(&ctx->link);
-    wlip_stop_source(&ctx->source);
     free(ctx);
 }
 
@@ -761,9 +815,15 @@ data_source_event_send(
 
     // Send the data asynchronously
     wl_list_insert(&sel->send_contexts, &ctx->link);
-    wlip_start_source(
-        sel->seat->wayland->wlip, &ctx->source, fd, POLLOUT, send_callback, ctx
-    );
+    eventsource_init(&ctx->source, 0, fd, EPOLLOUT, send_callback, ctx);
+
+    if (eventloop_add_source(sel->seat->wayland->wlip->loop, &ctx->source) ==
+        FAIL)
+    {
+        free(ctx);
+        sqlite3_reset(stmt);
+        goto fail;
+    }
 
     return;
 fail:

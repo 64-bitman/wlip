@@ -1,5 +1,6 @@
 #include "util.h"
 #include "wlip.h"
+#include <errno.h> // IWYU pragma: keep
 #include <getopt.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,14 @@ static const struct option OPTIONS[] = {
     {"data", required_argument, 0, 'd'},
     {NULL, 0, 0, 0}
 };
+
+static void
+signal_handler(int signo UNUSED, void *udata)
+{
+    struct wlip *wlip = udata;
+
+    wlip_uninit(wlip);
+}
 
 int
 main(int argc, char **argv)
@@ -24,9 +33,11 @@ main(int argc, char **argv)
         switch (c)
         {
         case 'c':
+            free(config_dir);
             config_dir = strdup(optarg);
             break;
         case 'd':
+            free(database_dir);
             database_dir = strdup(optarg);
             break;
         default:
@@ -34,14 +45,33 @@ main(int argc, char **argv)
         }
     }
 
-    struct wlip wlip;
+    struct wlip      wlip;
+    struct eventloop loop;
+    int              ret = FAIL;
 
-    if (wlip_init(&wlip, config_dir, database_dir) == FAIL)
+    // May be interrupted by a signal here and "leak" memory, but thats just a
+    // nitpick...
+    if (eventloop_init(&loop) == FAIL)
+    {
+        free(config_dir);
+        free(database_dir);
         return EXIT_FAILURE;
+    }
 
-    int ret = wlip_run(&wlip);
+    if (eventloop_add_signal(&loop, SIGTERM, signal_handler, &wlip) == FAIL ||
+        eventloop_add_signal(&loop, SIGINT, signal_handler, &wlip) == FAIL ||
+        wlip_init(&wlip, &loop, config_dir, database_dir) == FAIL)
+    {
+        free(config_dir);
+        free(database_dir);
+        goto exit;
+    }
 
+    ret = eventloop_run(&loop);
     wlip_uninit(&wlip);
-
+exit:
+    eventloop_del_signal(&loop, SIGTERM);
+    eventloop_del_signal(&loop, SIGINT);
+    eventloop_uninit(&loop);
     return ret == OK ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -9,6 +9,7 @@
 
 #define OK 0
 #define FAIL -1
+#define DONE 1
 
 #define N_ELEMENTS(arr) (sizeof(arr) / sizeof(*arr))
 
@@ -31,6 +32,31 @@
     {                                                                          \
         wl_array_release(arr);                                                 \
         wl_array_init(arr);                                                    \
+    } while (false)
+#define list_clear(link)                                                       \
+    do                                                                         \
+    {                                                                          \
+        wl_list_remove(link);                                                  \
+        wl_list_init(link);                                                    \
+    } while (false)
+
+// Insert "elm" before the first element in "list" that has a lower priority.
+// Lower priority value indicates a higher priority
+#define insert_list_priority(pos, list, elm, elml, l, p)                       \
+    do                                                                         \
+    {                                                                          \
+        bool _inserted = false;                                                \
+        wl_list_for_each(pos, list, l)                                         \
+        {                                                                      \
+            if (pos->p >= elm->p)                                              \
+            {                                                                  \
+                wl_list_insert(pos->l.prev, elml);                             \
+                _inserted = true;                                              \
+                break;                                                         \
+            }                                                                  \
+        }                                                                      \
+        if (!_inserted)                                                        \
+            wl_list_insert((list)->prev, elml); /* append to tail */           \
     } while (false)
 
 #define wlip_err(fmt, ...) wlip_log(fmt ": %s", ##__VA_ARGS__, strerror(errno))
@@ -60,37 +86,6 @@ enum mime_type_class
 {
     MIMETYPE_CLASS_TEXT,
     MIMETYPE_CLASS_IMAGE
-};
-
-typedef void (*timer_func)(void *udata);
-/*
- * Timer source that only triggers once then is removed.
- */
-struct timer
-{
-    int64_t remaining; // In nanoseconds
-
-    timer_func callback; // If NULL, then timer is not active
-    void      *udata;
-
-    struct wl_list link;
-};
-
-typedef void (*fdsource_func)(int revents, void *udata);
-/*
- * File descriptor source for event loop
- */
-struct fdsource
-{
-    int fd;
-    int events;
-
-    fdsource_func callback; // If NULL, then source is not active
-    void         *udata;
-
-    int pfd_idx; // -1 if not set
-
-    struct wl_list link;
 };
 
 // Note that callback takes ownership of "obj"
