@@ -52,26 +52,10 @@ main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    struct ipc_client  client;
-    int                epoll_fd = epoll_create1(0);
-    struct epoll_event ev;
+    struct ipc_client client;
 
-    if (epoll_fd == -1)
-    {
-        log_errerror("Error creating epoll fd");
+    if (ipc_client_init(&client) == FAIL)
         return EXIT_FAILURE;
-    }
-
-    if (ipc_client_init(&client, epoll_fd) == FAIL)
-        return EXIT_FAILURE;
-
-    ev.events = EPOLLIN;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client.fd, &ev) == -1)
-    {
-        log_errerror("Error adding fd to epoll");
-        ipc_client_uninit(&client);
-        return EXIT_FAILURE;
-    }
 
     const char *subcmd = argv[optind++];
     int         sub_argc = argc - optind + 1;
@@ -88,7 +72,6 @@ main(int argc, char **argv)
         log_error("Unknown subcommand '%s'", subcmd);
 
     ipc_client_uninit(&client);
-    close(epoll_fd);
 
     return ret;
 }
