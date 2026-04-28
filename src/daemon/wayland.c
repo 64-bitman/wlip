@@ -166,7 +166,7 @@ registry_event_global(
     struct wl_registry *proxy,
     uint32_t            name,
     const char         *interface,
-    uint32_t version    UNUSED
+    uint32_t            version
 )
 {
     struct wayland *wayland = udata;
@@ -190,8 +190,16 @@ registry_event_global(
     }
     else if (strcmp(interface, wl_seat_interface.name) == 0)
     {
-        struct wl_seat *seat_proxy =
-            wl_registry_bind(proxy, name, &wl_seat_interface, version);
+        if (version < WL_SEAT_NAME_SINCE_VERSION)
+        {
+            log_error(
+                "wl_seat global version is below %d", WL_SEAT_NAME_SINCE_VERSION
+            );
+            return;
+        }
+        struct wl_seat *seat_proxy = wl_registry_bind(
+            proxy, name, &wl_seat_interface, WL_SEAT_NAME_SINCE_VERSION
+        );
 
         if (seat_proxy == NULL)
             log_errwarn("Error binding to seat proxy");
