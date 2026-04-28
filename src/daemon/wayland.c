@@ -557,16 +557,18 @@ selection_event_handler(
         return;
     }
 
-    sel->seat->wayland->entry_id =
+    int64_t id =
         wlip_new_selection(seat->wayland->wlip, offer, &seat->mime_types);
 
-    if (sel->seat->wayland->entry_id != -1)
+    if (id != -1)
+    {
         database_save_int_setting(
             &seat->wayland->wlip->database,
             "Last_entry",
             sel->seat->wayland->entry_id
         );
-
+        sel->seat->wayland->entry_id = id;
+    }
     array_clear(&seat->mime_types);
 }
 
