@@ -39,9 +39,10 @@ wl_dep = dependency('wayland-client')
 json_dep = dependency('json-c')
 sqlite_dep = dependency('sqlite3')
 
-gtkls_dep = dependency('gtk4-layer-shell-0')
-glib_dep = dependency('gtk4')
-gtk4_dep = dependency('glib-2.0')
+wlcursor_dep = dependency('wayland-cursor')
+xkb_dep = dependency('xkbcommon')
+cairo_dep = dependency('cairo')
+pixman_dep = dependency('pixman-1')
 
 subdir('src')
 
@@ -72,5 +73,17 @@ wlip_cli = executable(
   version_h,
   include_directories: [includes, cli_includes],
   dependencies: [json_dep],
+  install: true
+)
+
+wlip_gui = executable(
+  'wlipgui',
+  'src/gui/main.c',
+  gui_sources,
+  client_sources,
+  sources,
+  version_h,
+  include_directories: [includes, gui_includes],
+  dependencies: [wl_dep, wlcursor_dep, xkb_dep, cairo_dep, pixman_dep, json_dep],
   install: true
 )

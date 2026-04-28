@@ -69,6 +69,7 @@ eventloop_init(struct eventloop *loop)
     wl_list_init(&loop->timers);
     wl_list_init(&loop->sources);
     wl_list_init(&loop->prepares);
+    loop->run = 0;
 
     return OK;
 }
