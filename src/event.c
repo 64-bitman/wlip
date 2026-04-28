@@ -2,8 +2,8 @@
 #include "log.h"
 #include "util.h"
 #include <errno.h> // IWYU pragma: keep
+#include <poll.h>
 #include <string.h>
-#include <sys/epoll.h>
 
 struct signalinfo
 {
@@ -48,19 +48,10 @@ eventloop_init(struct eventloop *loop)
         }
     }
 
-    loop->epoll_fd = epoll_create1(0);
-    if (loop->epoll_fd == -1)
-    {
-        log_errerror("Error creating epoll fd");
-        if (sigarray_is_empty())
-            free((void *)SIGARRAY);
-        return FAIL;
-    }
     loop->sig_handlers = calloc(SIGRTMAX, sizeof(*loop->sig_handlers));
     if (loop->sig_handlers == NULL)
     {
         log_errerror("Error allocating signal handler array");
-        close(loop->epoll_fd);
         if (sigarray_is_empty())
             free((void *)SIGARRAY);
         return FAIL;
@@ -90,18 +81,6 @@ eventloop_uninit(struct eventloop *loop)
     if (sigarray_is_empty())
         free((void *)SIGARRAY);
     free(loop->sig_handlers);
-    close(loop->epoll_fd);
-}
-
-static int
-compare_eventsource(const void *pa, const void *pb)
-{
-    const struct epoll_event *ea = pa;
-    const struct epoll_event *eb = pb;
-    const struct eventsource *a = ea->data.ptr;
-    const struct eventsource *b = eb->data.ptr;
-
-    return a->priority - b->priority;
 }
 
 /*
@@ -111,8 +90,6 @@ compare_eventsource(const void *pa, const void *pb)
 static int
 eventloop_poll(struct eventloop *loop)
 {
-#define MAX_EVENTS 10
-    struct epoll_event   events[MAX_EVENTS];
     struct eventprepare *prepare, *prepare_tmp;
 
     wl_list_for_each_safe(prepare, prepare_tmp, &loop->prepares, link)
@@ -123,24 +100,48 @@ eventloop_poll(struct eventloop *loop)
         return DONE;
 
     struct eventtimer *timer, *timer_tmp;
-    int                timeout = -1;
+    struct timespec    timeout;
+    int64_t            timeout_ns = -1;
 
     wl_list_for_each(timer, &loop->timers, link)
     {
-        if (timeout == -1 || timeout > timer->remaining)
-            timeout = timer->remaining;
+        if (timeout_ns == -1 || timeout_ns > timer->remaining)
+            timeout_ns = timer->remaining;
     }
 
-    int64_t start = get_time_ns(CLOCK_MONOTONIC) / 1000000, end;
+#define MAX_FDS 10
+    struct pollfd       pfds[MAX_FDS];
+    int                 pfds_len = 0;
+    struct eventsource *source, *source_tmp;
+
+    // Add any fd sources to the event loop
+    wl_list_for_each(source, &loop->sources, link)
+    {
+        pfds[pfds_len].fd = source->fd;
+        pfds[pfds_len].events = source->events;
+        source->pfd_idx = pfds_len;
+        pfds_len++;
+
+        if (pfds_len >= MAX_FDS)
+            break;
+    }
+
+    int64_t start = get_time_ns(CLOCK_MONOTONIC), end;
 
     if (start == -1)
         return FAIL;
 
-    int nfds = epoll_pwait(
-        loop->epoll_fd, events, MAX_EVENTS, timeout, &loop->sigmask
+    if (timeout_ns != -1)
+    {
+        timeout.tv_sec = timeout_ns / 1000000000LL;
+        timeout.tv_nsec = timeout_ns % 1000000000LL;
+    }
+
+    int ret = ppoll(
+        pfds, pfds_len, timeout_ns == -1 ? NULL : &timeout, &loop->sigmask
     );
 
-    if (nfds == -1)
+    if (ret == -1)
     {
         if (errno == EINTR)
         {
@@ -168,14 +169,18 @@ eventloop_poll(struct eventloop *loop)
         return FAIL;
     }
 
-    // Must sort "events" array from highest priority to lowest priority.
-    qsort(events, nfds, sizeof(*events), compare_eventsource);
-
-    for (int i = 0; i < nfds; i++)
+    wl_list_for_each_safe(source, source_tmp, &loop->sources, link)
     {
-        struct eventsource *source = events[i].data.ptr;
+        if (source->pfd_idx == -1)
+            continue;
 
-        source->callback(events[i].events, source->udata);
+        int revents = pfds[source->pfd_idx].revents;
+
+        if (revents == 0)
+            continue;
+
+        source->pfd_idx = -1;
+        source->callback(revents, source->udata);
     }
     if (loop->run == 0)
         return DONE;
@@ -238,31 +243,14 @@ eventloop_add_timer(struct eventloop *loop, struct eventtimer *timer)
     );
 }
 
-/*
- * Returns OK on success and FAIL on failure.
- */
-int
+void
 eventloop_add_source(struct eventloop *loop, struct eventsource *source)
 {
-    struct epoll_event ev;
-
-    ev.events = source->events;
-    ev.data.ptr = source;
-
-    if (epoll_ctl(loop->epoll_fd, EPOLL_CTL_ADD, source->fd, &ev) == -1)
-    {
-        log_errwarn("Error adding fd %d to epoll", source->fd);
-        return FAIL;
-    }
-
-    source->loop = loop;
-
     struct eventsource *tmp;
+
     insert_list_priority(
         tmp, &loop->sources, source, &source->link, link, priority
     );
-
-    return OK;
 }
 
 void
@@ -421,13 +409,6 @@ eventtimer_stop(struct eventtimer *timer)
 void
 eventsource_uninit(struct eventsource *source)
 {
-    if (wl_list_empty(&source->link))
-        return;
-
-    if (epoll_ctl(source->loop->epoll_fd, EPOLL_CTL_DEL, source->fd, NULL) ==
-        -1)
-        log_errwarn("Error removing fd %d from epoll", source->fd);
-
     list_clear(&source->link);
 }
 
@@ -435,28 +416,6 @@ void
 eventprepare_uninit(struct eventprepare *prepare)
 {
     list_clear(&prepare->link);
-}
-
-int
-eventsource_modify(struct eventsource *source, int events)
-{
-    if (wl_list_empty(&source->link))
-    {
-        source->events = events;
-        return OK;
-    }
-
-    struct epoll_event ev;
-
-    ev.events = events;
-    ev.data.ptr = source;
-
-    if (epoll_ctl(source->loop->epoll_fd, EPOLL_CTL_MOD, source->fd, &ev) == -1)
-    {
-        log_errwarn("Error modifying fd %d for epoll", source->fd);
-        return FAIL;
-    }
-    return OK;
 }
 
 /*

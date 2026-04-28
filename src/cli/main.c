@@ -6,7 +6,6 @@
 #include <getopt.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <unistd.h>
 
 static bool JSON = false;

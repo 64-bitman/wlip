@@ -647,7 +647,7 @@ send_callback(int revents, void *udata)
 {
     struct send_context *ctx = udata;
 
-    if (!(revents & EPOLLOUT))
+    if (!(revents & POLLOUT))
         goto stop;
 
     ssize_t w = write(ctx->source.fd, ctx->data, ctx->remaining);
@@ -733,17 +733,11 @@ data_source_event_send(
         goto fail;
     }
 
-    // Send the data asynchronously
     wl_list_insert(&sel->send_contexts, &ctx->link);
-    eventsource_init(&ctx->source, 0, fd, EPOLLOUT, send_callback, ctx);
 
-    if (eventloop_add_source(sel->seat->wayland->wlip->loop, &ctx->source) ==
-        FAIL)
-    {
-        free(ctx);
-        sqlite3_reset(stmt);
-        goto fail;
-    }
+    // Send the data asynchronously
+    eventsource_init(&ctx->source, 0, fd, POLLOUT, send_callback, ctx);
+    eventloop_add_source(sel->seat->wayland->wlip->loop, &ctx->source);
 
     return;
 fail:

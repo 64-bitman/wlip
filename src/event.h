@@ -1,7 +1,6 @@
 #pragma once
 
 #include <signal.h> // IWYU pragma: keep
-#include <sys/epoll.h>
 #include <wayland-util.h>
 
 struct eventloop;
@@ -10,8 +9,8 @@ typedef void (*eventtimer_func)(void *udata);
 struct eventtimer
 {
     int priority;
-    int interval;  // In milliseconds
-    int remaining; // In milliseconds
+    int interval;  // In nanoseconds
+    int remaining; // In nanoseconds
 
     eventtimer_func callback;
     void           *udata;
@@ -25,12 +24,12 @@ struct eventsource
     int priority;
     int fd;
     int events;
+    int pfd_idx;
 
     eventsource_func callback;
     void            *udata;
 
-    struct eventloop *loop;
-    struct wl_list    link;
+    struct wl_list link;
 };
 
 typedef void (*eventprepare_func)(void *udata);
@@ -55,13 +54,12 @@ struct signal_handler
 
 struct eventloop
 {
-    int      epoll_fd;
     sigset_t sigmask;
 
     // If > 0, then keep running the event loop
     int run;
 
-    // First element list has the highest priority
+    // First element in list has the highest priority
     struct wl_list timers;
     struct wl_list sources;
     struct wl_list prepares;
@@ -76,7 +74,7 @@ int eventloop_run(struct eventloop *loop);
 void eventloop_stop(struct eventloop *loop);
 
 void eventloop_add_timer(struct eventloop *loop, struct eventtimer *timer);
-int eventloop_add_source(struct eventloop *loop, struct eventsource *source);
+void eventloop_add_source(struct eventloop *loop, struct eventsource *source);
 void eventloop_add_prepare(struct eventloop *loop, struct eventprepare *prepare);
 
 int eventloop_add_signal(struct eventloop *loop, int signo, signal_func callback, void *udata);
@@ -90,8 +88,6 @@ void eventprepare_init(struct eventprepare *prepare, int priority, eventprepare_
 void eventtimer_stop(struct eventtimer *timer);
 void eventsource_uninit(struct eventsource *source);
 void eventprepare_uninit(struct eventprepare *prepare);
-
-int eventsource_modify(struct eventsource *source, int events);
 
 void ignore_signal(int signo, void *udata);
 // clang-format on

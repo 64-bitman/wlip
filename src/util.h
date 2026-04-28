@@ -11,7 +11,7 @@
 #define FAIL -1
 #define DONE 1
 
-#define N_ELEMENTS(arr) (sizeof(arr) / sizeof(*arr))
+#define N_ELEMENTS(arr) ((int)sizeof(arr) / (int)sizeof(*arr))
 
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))

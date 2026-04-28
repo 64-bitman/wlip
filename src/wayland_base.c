@@ -2,6 +2,7 @@
 #include "log.h"
 #include "util.h"
 #include <limits.h>
+#include <poll.h>
 #include <string.h>
 #include <wayland-client.h>
 
@@ -46,18 +47,11 @@ wayland_base_init(
         INT_MIN, // Wayland source must be prioritized first, so that events are
                  // processed before we do anything else.
         wbase->fd,
-        EPOLLIN,
+        POLLIN,
         wayland_display_check,
         wbase
     );
-
-    if (eventloop_add_source(loop, &wbase->source) == FAIL)
-    {
-        eventsource_uninit(&wbase->source);
-        wl_registry_destroy(wbase->registry);
-        wl_display_disconnect(wbase->display);
-        return FAIL;
-    }
+    eventloop_add_source(loop, &wbase->source);
 
     // Must have lowest priority, so that the display is flushed only after
     // doing everything.
@@ -88,7 +82,7 @@ wayland_display_check(int revents, void *udata)
 {
     struct wayland_base *wbase = udata;
 
-    if (!(revents & EPOLLIN))
+    if (!(revents & POLLIN))
         goto stop;
 
     wbase->reading = false;

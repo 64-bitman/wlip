@@ -8,7 +8,6 @@
 #include <errno.h> // IWYU pragma: keep
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 
 /*
  * Initialize program state structure and connect to compositor. Note that
