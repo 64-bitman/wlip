@@ -2,7 +2,6 @@
 #include "ipc_client.h"
 #include "log.h"
 #include "util.h"
-#include <assert.h>
 #include <errno.h> // IWYU pragma: keep
 #include <getopt.h>
 #include <stdio.h>

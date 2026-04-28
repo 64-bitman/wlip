@@ -3,6 +3,7 @@
 #include "event.h"
 #include "log.h"
 #include "util.h"
+#include "wayland_base.h"
 #include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
 #include <fcntl.h>
@@ -26,9 +27,6 @@ struct send_context
 };
 
 // clang-format off
-static void wayland_display_check(int revents, void *udata);
-static void wayland_display_prepare(void *udata);
-
 static void registry_event_global(void *udata, struct wl_registry *proxy, uint32_t name, const char *interface, uint32_t version);
 static void registry_event_global_remove(void *udata, struct wl_registry *proxy, uint32_t name);
 
@@ -91,80 +89,41 @@ wayland_init(struct wayland *wayland, struct wlip *wlip)
 {
     const char *display_name = wlip->config.display_name;
 
-    if (display_name == NULL)
-        display_name = getenv("WAYLAND_DISPLAY");
-    if (display_name == NULL)
-    {
-        log_error("$WAYLAND_DISPLAY not set");
+    if (wayland_base_init(&wayland->base, display_name, wlip->loop) == FAIL)
         return FAIL;
-    }
+
+    wl_registry_add_listener(
+        wayland->base.registry, &registry_listener, wayland
+    );
 
     wayland->wlip = wlip;
-    wl_list_init(&wayland->seats);
     wayland->data_manager = NULL;
-
-    wayland->display = wl_display_connect(display_name);
-    if (wayland->display == NULL)
-    {
-        log_errerror("Error connecting to display '%s'", display_name);
-        return FAIL;
-    }
-
-    wayland->registry = wl_display_get_registry(wayland->display);
-    if (wayland->registry == NULL)
-    {
-        log_errerror("Error creating registry");
-        wl_display_disconnect(wayland->display);
-        return FAIL;
-    }
-
     wl_list_init(&wayland->seats);
     wayland->entry_id = -1;
 
-    wl_registry_add_listener(wayland->registry, &registry_listener, wayland);
-
-    // We will handle events when we return to the event loop
-    eventsource_init(
-        &wayland->source,
-        INT_MIN, // Wayland source must be prioritized first, so that events are
-                 // processed before we do anything else.
-        wl_display_get_fd(wayland->display),
-        EPOLLIN,
-        wayland_display_check,
-        wayland
-    );
-    int ret = 0;
-
-    if (eventloop_add_source(wlip->loop, &wayland->source) == FAIL ||
-        (ret = wl_display_prepare_read(wayland->display)) == -1 ||
-        (ret = wl_display_flush(wayland->display)) == -1)
+    // Get initial globals
+    if (wl_display_roundtrip(wayland->base.display) == -1)
     {
-        if (ret == -1)
-            log_errerror("Error preparing/flushing display");
-
-        eventsource_uninit(&wayland->source);
-        wl_registry_destroy(wayland->registry);
-        wl_display_disconnect(wayland->display);
-        return FAIL;
+        log_errerror("Error doing initial display roundtrip");
+        goto fail;
     }
 
-    // Must have lowest priority, so that the display is flushed only after
-    // doing everything.
-    eventprepare_init(
-        &wayland->prepare, INT_MAX, wayland_display_prepare, wayland
-    );
-    eventloop_add_prepare(wlip->loop, &wayland->prepare);
+    if (wayland->data_manager == NULL)
+    {
+        log_error("ext-data-control-v1 protocol not supported by compositor");
+        goto fail;
+    }
 
     return OK;
+fail:
+    wayland_base_uninit(&wayland->base);
+    return FAIL;
 }
 
 void
 wayland_uninit(struct wayland *wayland)
 {
     struct wayland_seat *seat, *tmp;
-
-    eventsource_uninit(&wayland->source);
-    eventprepare_uninit(&wayland->prepare);
 
     wl_list_for_each_safe(seat, tmp, &wayland->seats, link)
     {
@@ -174,57 +133,7 @@ wayland_uninit(struct wayland *wayland)
     if (wayland->data_manager != NULL)
         ext_data_control_manager_v1_destroy(wayland->data_manager);
 
-    wl_registry_destroy(wayland->registry);
-    wl_display_disconnect(wayland->display);
-}
-
-/*
- * Called after polling the display.
- */
-static void
-wayland_display_check(int revents, void *udata)
-{
-    struct wayland *wayland = udata;
-
-    if (!(revents & EPOLLIN))
-        goto stop;
-
-    if (wl_display_read_events(wayland->display) == -1 ||
-        wl_display_dispatch_pending(wayland->display) == -1)
-    {
-        log_errerror("Error reading/dispatching display events");
-        goto stop;
-    }
-
-    while (wl_display_prepare_read(wayland->display) == -1)
-        if (wl_display_dispatch_pending(wayland->display) == -1)
-        {
-            log_errerror("Error dispatching display events");
-            goto stop;
-        }
-
-    if (wl_display_flush(wayland->display) == -1)
-    {
-        log_errerror("Error flushing display");
-        goto stop;
-    }
-
-    return;
-stop:
-    wlip_uninit(wayland->wlip);
-    return;
-}
-
-static void
-wayland_display_prepare(void *udata)
-{
-    struct wayland *wayland = udata;
-
-    if (wl_display_flush(wayland->display) == -1)
-    {
-        log_errerror("Error flushing display");
-        wlip_uninit(wayland->wlip);
-    }
+    wayland_base_uninit(&wayland->base);
 }
 
 /*

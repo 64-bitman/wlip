@@ -3,6 +3,7 @@
 #include "config.h"
 #include "event.h"
 #include "ext-data-control-v1.h"
+#include "wayland_base.h"
 #include <stdbool.h>
 #include <wayland-client.h>
 
@@ -61,11 +62,7 @@ struct wayland_seat
 struct wayland
 {
     struct wlip        *wlip;
-    struct eventsource  source;
-    struct eventprepare prepare;
-
-    struct wl_display  *display;
-    struct wl_registry *registry;
+    struct wayland_base base;
 
     struct ext_data_control_manager_v1 *data_manager;
     struct wl_list                      seats;

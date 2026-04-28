@@ -68,7 +68,6 @@ wlip_init(
         }
 
     wayland_set_selection(&wlip->wayland, id);
-    wlip->init = true;
 
     return OK;
 }
@@ -76,8 +75,6 @@ wlip_init(
 void
 wlip_uninit(struct wlip *wlip)
 {
-    if (!wlip->init)
-        return;
     config_uninit(&wlip->config);
     wayland_uninit(&wlip->wayland);
     database_uninit(&wlip->database);
@@ -85,7 +82,6 @@ wlip_uninit(struct wlip *wlip)
 
     free(wlip->config_directory);
     free(wlip->database_directory);
-    wlip->init = false;
 }
 
 /*
@@ -131,7 +127,7 @@ wlip_new_selection(
         // Close our write-end because we don't need it
         close(fds[1]);
 
-        if (wl_display_flush(wlip->wayland.display) == -1)
+        if (wl_display_flush(wlip->wayland.base.display) == -1)
         {
             log_errwarn("Error flushing display");
             goto fail;

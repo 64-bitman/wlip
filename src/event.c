@@ -80,7 +80,8 @@ eventloop_init(struct eventloop *loop)
 void
 eventloop_uninit(struct eventloop *loop)
 {
-    if (!wl_list_empty(&loop->timers) || !wl_list_empty(&loop->sources))
+    if (!wl_list_empty(&loop->timers) || !wl_list_empty(&loop->sources) ||
+        !wl_list_empty(&loop->prepares))
         log_warn("Event loop still has sources active");
 
     sigprocmask(SIG_SETMASK, &loop->sigmask, NULL);
@@ -91,8 +92,8 @@ eventloop_uninit(struct eventloop *loop)
     close(loop->epoll_fd);
 }
 
-int
-cmp_eventsource(const void *pa, const void *pb)
+static int
+compare_eventsource(const void *pa, const void *pb)
 {
     const struct epoll_event *ea = pa;
     const struct epoll_event *eb = pb;
@@ -102,21 +103,23 @@ cmp_eventsource(const void *pa, const void *pb)
     return a->priority - b->priority;
 }
 
+/*
+ *  Returns OK on success, DONE if event loop should be stopped, and FAIL on
+ *  failure.
+ */
 static int
 eventloop_poll(struct eventloop *loop)
 {
 #define MAX_EVENTS 10
-    struct epoll_event events[MAX_EVENTS];
-
-    if (wl_list_empty(&loop->timers) && wl_list_empty(&loop->sources))
-        return DONE;
-
+    struct epoll_event   events[MAX_EVENTS];
     struct eventprepare *prepare, *prepare_tmp;
 
     wl_list_for_each_safe(prepare, prepare_tmp, &loop->prepares, link)
     {
         prepare->callback(prepare->udata);
     }
+    if (loop->run == 0)
+        return DONE;
 
     struct eventtimer *timer, *timer_tmp;
     int                timeout = -1;
@@ -155,6 +158,8 @@ eventloop_poll(struct eventloop *loop)
                             i, loop->sig_handlers[i].udata
                         );
                 }
+                if (loop->run == 0)
+                    return DONE;
             }
             goto check_timers;
         }
@@ -163,7 +168,7 @@ eventloop_poll(struct eventloop *loop)
     }
 
     // Must sort "events" array from highest priority to lowest priority.
-    qsort(events, nfds, sizeof(*events), cmp_eventsource);
+    qsort(events, nfds, sizeof(*events), compare_eventsource);
 
     for (int i = 0; i < nfds; i++)
     {
@@ -171,6 +176,8 @@ eventloop_poll(struct eventloop *loop)
 
         source->callback(events[i].events, source->udata);
     }
+    if (loop->run == 0)
+        return DONE;
 
 check_timers:
     end = get_time_ns(CLOCK_MONOTONIC) / 1000000;
@@ -189,25 +196,36 @@ check_timers:
             timer->callback(timer->udata);
         }
     }
+    if (loop->run == 0)
+        return DONE;
 
 #undef MAX_EVENTS
     return OK;
 }
 
 /*
- * Start running the event loop until there are no more sources left or an error
- * occurs. This function is rentrant. Returns OK on success, DONE if event loop
- * should be stopped, and FAIL on failure.
+ * Start running the event loop until it is stopped. This function is reentrant.
+ * Returns OK on success and FAIL on failure.
+
  */
 int
 eventloop_run(struct eventloop *loop)
 {
     int ret;
 
+    loop->run++;
+
     while ((ret = eventloop_poll(loop)) == OK)
         ;
 
     return ret == DONE ? OK : FAIL;
+}
+
+void
+eventloop_stop(struct eventloop *loop)
+{
+    if (loop->run > 0)
+        loop->run--;
 }
 
 void
@@ -438,4 +456,12 @@ eventsource_modify(struct eventsource *source, int events)
         return FAIL;
     }
     return OK;
+}
+
+/*
+ * Used to ignore a signal
+ */
+void
+ignore_signal(int signo UNUSED, void *udata UNUSED)
+{
 }

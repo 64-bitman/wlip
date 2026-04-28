@@ -13,7 +13,6 @@
 
 struct wlip
 {
-    bool  init;
     char *config_directory;
     char *database_directory;
 

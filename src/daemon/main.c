@@ -7,24 +7,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const struct option OPTIONS[] = {
-    {"config", required_argument, 0, 'c'},
-    {"data", required_argument, 0, 'd'},
-    {NULL, 0, 0, 0}
-};
-
 static void
 signal_handler(int signo UNUSED, void *udata)
 {
-    struct wlip *wlip = udata;
+    struct eventloop *loop = udata;
 
     log_info("Exiting...");
-    wlip_uninit(wlip);
+    eventloop_stop(loop);
 }
 
 int
 main(int argc, char **argv)
 {
+    static const struct option options[] = {
+        {"config", required_argument, 0, 'c'},
+        {"data", required_argument, 0, 'd'},
+        {NULL, 0, 0, 0}
+    };
+
     int c;
     int idx;
 
@@ -33,7 +33,7 @@ main(int argc, char **argv)
 
     log_init(NULL);
 
-    while ((c = getopt_long(argc, argv, "", OPTIONS, &idx)) != -1)
+    while ((c = getopt_long(argc, argv, "", options, &idx)) != -1)
     {
         switch (c)
         {
@@ -64,8 +64,9 @@ main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (eventloop_add_signal(&loop, SIGTERM, signal_handler, &wlip) == FAIL ||
-        eventloop_add_signal(&loop, SIGINT, signal_handler, &wlip) == FAIL ||
+    if (eventloop_add_signal(&loop, SIGTERM, signal_handler, &loop) == FAIL ||
+        eventloop_add_signal(&loop, SIGINT, signal_handler, &loop) == FAIL ||
+        eventloop_add_signal(&loop, SIGPIPE, ignore_signal, &loop) == FAIL ||
         wlip_init(&wlip, &loop, config_dir, database_dir) == FAIL)
     {
         free(config_dir);
@@ -78,6 +79,7 @@ main(int argc, char **argv)
 exit:
     eventloop_del_signal(&loop, SIGTERM);
     eventloop_del_signal(&loop, SIGINT);
+    eventloop_del_signal(&loop, SIGPIPE);
     eventloop_uninit(&loop);
     return ret == OK ? EXIT_SUCCESS : EXIT_FAILURE;
 }

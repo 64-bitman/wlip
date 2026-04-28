@@ -58,6 +58,9 @@ struct eventloop
     int      epoll_fd;
     sigset_t sigmask;
 
+    // If > 0, then keep running the event loop
+    int run;
+
     // First element list has the highest priority
     struct wl_list timers;
     struct wl_list sources;
@@ -70,6 +73,7 @@ struct eventloop
 int eventloop_init(struct eventloop *loop);
 void eventloop_uninit(struct eventloop *loop);
 int eventloop_run(struct eventloop *loop);
+void eventloop_stop(struct eventloop *loop);
 
 void eventloop_add_timer(struct eventloop *loop, struct eventtimer *timer);
 int eventloop_add_source(struct eventloop *loop, struct eventsource *source);
@@ -88,4 +92,6 @@ void eventsource_uninit(struct eventsource *source);
 void eventprepare_uninit(struct eventprepare *prepare);
 
 int eventsource_modify(struct eventsource *source, int events);
+
+void ignore_signal(int signo, void *udata);
 // clang-format on
