@@ -66,11 +66,14 @@ config_verify_type(toml_datum_t dat, toml_type_t type, const char *key, ...)
 {
     if (dat.type == type)
         return OK;
+    else if (type == STRING_OR_ARRAY &&
+             (dat.type == TOML_STRING || dat.type == TOML_ARRAY))
+        return OK;
     else if (dat.type != TOML_UNKNOWN)
     {
         const char *str;
 
-        switch (type)
+        switch ((int)type)
         {
         case TOML_INT64:
             str = "an integer";
@@ -86,6 +89,9 @@ config_verify_type(toml_datum_t dat, toml_type_t type, const char *key, ...)
             break;
         case TOML_ARRAY:
             str = "an array";
+            break;
+        case STRING_OR_ARRAY:
+            str = "a string or an array";
             break;
         default:
             log_abort("Unsupported TOML type %d", type);

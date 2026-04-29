@@ -2,6 +2,8 @@
 
 #include "tomlc17.h"
 
+#define STRING_OR_ARRAY ((toml_type_t) - 1)
+
 struct config_basic_option
 {
     const char *key;

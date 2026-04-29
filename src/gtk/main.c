@@ -44,6 +44,7 @@ main(int argc, char **argv)
 
     g_main_loop_run(loop);
 
+    gui_uninit(&gui);
     log_info("Exiting...");
 exit:
     for (uint i = 0; i < N_ELEMENTS(signals); i++)
