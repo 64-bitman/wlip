@@ -351,12 +351,12 @@ void
 eventtimer_init(
     struct eventtimer *timer,
     int                priority,
-    int                interval,
+    int                interval, // In milliseconds
     eventtimer_func    callback,
     void              *udata
 )
 {
-    timer->interval = timer->remaining = interval;
+    timer->interval = timer->remaining = interval * 1000000;
     timer->callback = callback;
     timer->udata = udata;
     timer->priority = priority;
