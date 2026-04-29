@@ -39,7 +39,7 @@ static const char *SCHEMA =
     "   Mime_type       TEXT NOT NULL,"
     "   Data_id         BLOB(32)," // May be NULL
     "   PRIMARY KEY (Id, Mime_type),"
-    "   FOREIGN KEY (Id) REFERENCES Entries(Id) ON DELETE CASCADE"
+    "   FOREIGN KEY (Id) REFERENCES Entries(Id) ON DELETE CASCADE,"
     "   FOREIGN KEY (Data_id) REFERENCES Data(Data_id) ON DELETE RESTRICT"
     ") WITHOUT ROWID;"
     ""
@@ -298,21 +298,21 @@ database_finalize_statements(struct database *db)
 {
     if (db->stmt.save_setting != NULL)
         sqlite3_finalize(db->stmt.save_setting);
-    if (db->stmt.save_setting != NULL)
+    if (db->stmt.get_setting != NULL)
         sqlite3_finalize(db->stmt.get_setting);
 
-    if (db->stmt.serialize_entry != NULL)
+    if (db->stmt.begin_immediate != NULL)
         sqlite3_finalize(db->stmt.begin_transaction);
-    if (db->stmt.serialize_entry != NULL)
+    if (db->stmt.begin_immediate != NULL)
         sqlite3_finalize(db->stmt.begin_immediate);
-    if (db->stmt.serialize_entry != NULL)
+    if (db->stmt.commit_transaction != NULL)
         sqlite3_finalize(db->stmt.commit_transaction);
-    if (db->stmt.serialize_entry != NULL)
+    if (db->stmt.rollback_transaction != NULL)
         sqlite3_finalize(db->stmt.rollback_transaction);
 
     if (db->stmt.serialize_entry != NULL)
         sqlite3_finalize(db->stmt.serialize_entry);
-    if (db->stmt.serialize_entry != NULL)
+    if (db->stmt.update_entry != NULL)
         sqlite3_finalize(db->stmt.update_entry);
     if (db->stmt.serialize_mime_type != NULL)
         sqlite3_finalize(db->stmt.serialize_mime_type);
@@ -394,8 +394,12 @@ database_serialize_entry(struct database *db, struct database_entry *entry)
         stmt = db->stmt.update_entry;
         if (entry->flags & DATABASE_ENTRY_UPDATE)
             sqlite3_bind_int64(stmt, 1, entry->update_time);
+        else
+            sqlite3_bind_null(stmt, 1);
         if (entry->flags & DATABASE_ENTRY_STARRED)
             sqlite3_bind_int(stmt, 2, entry->starred);
+        else
+            sqlite3_bind_null(stmt, 2);
         sqlite3_bind_int64(stmt, 3, entry->id);
     }
     else
@@ -644,7 +648,6 @@ database_deserialize_entries(
 {
     sqlite3_stmt *stmt = db->stmt.deserialize_entries;
     int           ret;
-    bool          did = false;
 
     if (n == -1)
         n = INT64_MAX;
@@ -662,7 +665,6 @@ database_deserialize_entries(
         };
 
         callback(&entry, udata);
-        did = true;
     }
 
     sqlite3_reset(stmt);
@@ -676,7 +678,7 @@ database_deserialize_entries(
         return FAIL;
     }
 
-    return did ? OK : FAIL;
+    return OK;
 }
 
 static void
@@ -722,9 +724,9 @@ database_deserialize_entry_id(
     }
 
     entry->id = id;
-    entry->creation_time = sqlite3_column_int64(stmt, 1);
-    entry->update_time = sqlite3_column_int64(stmt, 2);
-    entry->starred = sqlite3_column_int(stmt, 3);
+    entry->creation_time = sqlite3_column_int64(stmt, 0);
+    entry->update_time = sqlite3_column_int64(stmt, 1);
+    entry->starred = sqlite3_column_int(stmt, 2);
     sqlite3_reset(stmt);
 
     return OK;

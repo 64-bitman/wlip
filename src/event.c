@@ -79,7 +79,7 @@ eventloop_uninit(struct eventloop *loop)
     sigprocmask(SIG_SETMASK, &loop->sigmask, NULL);
 
     if (sigarray_is_empty())
-        free((void *)SIGARRAY);
+        clear(SIGARRAY);
     free(loop->sig_handlers);
 }
 
@@ -186,7 +186,7 @@ eventloop_poll(struct eventloop *loop)
         return DONE;
 
 check_timers:
-    end = get_time_ns(CLOCK_MONOTONIC) / 1000000;
+    end = get_time_ns(CLOCK_MONOTONIC);
 
     if (end == -1)
         return FAIL;
@@ -205,7 +205,7 @@ check_timers:
     if (loop->run == 0)
         return DONE;
 
-#undef MAX_EVENTS
+#undef MAX_FDS
     return OK;
 }
 
@@ -266,7 +266,8 @@ static void
 signal_handler(int signo)
 {
     GOT_SIGNAL = true;
-    SIGARRAY[signo].active = true;
+    if (SIGARRAY != NULL)
+        SIGARRAY[signo].active = true;
 }
 
 /*
@@ -309,6 +310,7 @@ eventloop_add_signal(
 
     loop->sig_handlers[signo].callback = callback;
     loop->sig_handlers[signo].udata = udata;
+    SIGARRAY[signo].refcount++;
 
     return OK;
 }
@@ -323,7 +325,7 @@ eventloop_del_signal(struct eventloop *loop, int signo)
         return OK;
     loop->sig_handlers[signo].callback = NULL;
 
-    if (--SIGARRAY[signo].refcount > 0)
+    if (SIGARRAY[signo].refcount == 0 || --SIGARRAY[signo].refcount > 0)
         return OK;
 
     struct sigaction sa = {0};

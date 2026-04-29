@@ -8,9 +8,9 @@ struct eventloop;
 typedef void (*eventtimer_func)(void *udata);
 struct eventtimer
 {
-    int priority;
-    int interval;  // In nanoseconds
-    int remaining; // In nanoseconds
+    int     priority;
+    int64_t interval;  // In nanoseconds
+    int64_t remaining; // In nanoseconds
 
     eventtimer_func callback;
     void           *udata;

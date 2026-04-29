@@ -49,6 +49,7 @@ config_init(struct config *config, const char *cfgdir)
             .key = "wlip.persist",
             .type = TOML_BOOLEAN,
             .store = &config->persist,
+            .def.boolean = true
             .def.int64 = true
         }
     };
