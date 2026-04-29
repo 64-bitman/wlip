@@ -1,6 +1,7 @@
 #pragma once
 
 #include <errno.h>
+#include <stdarg.h>
 
 enum log_level
 {

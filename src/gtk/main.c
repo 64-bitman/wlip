@@ -1,3 +1,4 @@
+#include "gui.h"
 #include "log.h"
 #include "util.h"
 #include <glib-unix.h>
@@ -6,7 +7,6 @@
 static gboolean
 signal_handler(void *data)
 {
-    log_info("Exiting...");
     g_main_loop_quit(data);
 
     // We will remove the source after the main loop quits
@@ -37,8 +37,15 @@ main(int argc, char **argv)
     signals[0] = g_unix_signal_add(SIGINT, signal_handler, loop);
     signals[1] = g_unix_signal_add(SIGTERM, signal_handler, loop);
 
+    struct gui gui;
+
+    if (gui_init(&gui, loop) == FAIL)
+        goto exit;
+
     g_main_loop_run(loop);
 
+    log_info("Exiting...");
+exit:
     for (uint i = 0; i < N_ELEMENTS(signals); i++)
         g_source_remove(signals[i]);
 

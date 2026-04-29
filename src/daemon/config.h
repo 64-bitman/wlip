@@ -41,5 +41,7 @@ struct config
     struct wl_array blocked_mime_types;
 };
 
-int  config_init(struct config *config, const char *cfgdir);
+// clang-format off
+int config_init(struct config *config, const char *cfgdir);
 void config_uninit(struct config *config);
+// clang-format on

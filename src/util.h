@@ -10,6 +10,7 @@
 #define OK 0
 #define FAIL -1
 #define DONE 1
+#define IGNORED 2
 
 #define N_ELEMENTS(arr) ((int)sizeof(arr) / (int)sizeof(*arr))
 
