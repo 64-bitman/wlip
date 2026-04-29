@@ -50,7 +50,18 @@ config_init(struct config *config, const char *cfgdir)
             .type = TOML_BOOLEAN,
             .store = &config->persist,
             .def.boolean = true
-            .def.int64 = true
+        },
+        {
+            .key = "wlip.page_size",
+            .type = TOML_INT64,
+            .store = &config->page_size,
+            .def.int64 = 4096
+        },
+        {
+            .key = "wlip.cache_size",
+            .type = TOML_INT64,
+            .store = &config->cache_size,
+            .def.int64 = 1000
         }
     };
     // clang-format on

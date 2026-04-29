@@ -28,6 +28,9 @@ struct config
     // then the mime type will be ignored. In bytes
     int64_t max_size;
 
+    int page_size;  // In bytes, used for SQLite database
+    int cache_size; // Cache size in number of pages (from page_size)
+
     // Array of seats that the user has configured.
     struct config_seat *configured_seats;
     uint32_t            configured_seats_len;

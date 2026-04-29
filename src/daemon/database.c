@@ -72,10 +72,11 @@ static const char *SCHEMA =
     "               Data_id = OLD.Data_id); "
     "END;"
     "";
-// clang-format on
 
-static int  database_prepare_statements(struct database *db);
+static int database_prepare_statements(struct database *db);
+static int database_execute_statement(struct database *db, const char *statement);
 static void database_finalize_statements(struct database *db);
+// clang-format on
 
 /*
  * Initialize the database at the given path If "dir" is NULL, then use an in
@@ -130,6 +131,25 @@ database_init(struct database *db, const char *dir, struct config *config)
         return FAIL;
     }
 
+    char *pragma_statement = wlip_strdup_printf(
+        "PRAGMA page_size = %d;"
+        "PRAGMA cache_size = %d;",
+        config->page_size,
+        config->cache_size
+    );
+
+    if (pragma_statement != NULL)
+    {
+        ret = database_execute_statement(db, pragma_statement);
+        free(pragma_statement);
+
+        if (ret == FAIL)
+        {
+            sqlite3_close(db->handle);
+            return FAIL;
+        }
+    }
+
     // Execute database schema
     char *err_msg = NULL;
 
@@ -160,6 +180,8 @@ database_init(struct database *db, const char *dir, struct config *config)
 void
 database_uninit(struct database *db)
 {
+    if (database_execute_statement(db, "PRAGMA optimize;") == FAIL)
+        log_warn("Error optimizing database");
     database_finalize_statements(db);
 
     sqlite3_close(db->handle);
@@ -291,6 +313,20 @@ fail:
     );
     database_finalize_statements(db);
     return FAIL;
+}
+
+static int
+database_execute_statement(struct database *db, const char *statement)
+{
+    char *err_msg = NULL;
+    int   ret = sqlite3_exec(db->handle, statement, NULL, NULL, &err_msg);
+
+    if (ret != SQLITE_OK)
+    {
+        log_error("Error executing statement '%s': %s", statement, err_msg);
+        return FAIL;
+    }
+    return OK;
 }
 
 static void
@@ -648,6 +684,8 @@ database_deserialize_entries(
 {
     sqlite3_stmt *stmt = db->stmt.deserialize_entries;
     int           ret;
+    bool          did = false; // We need this since this is used to by the cli
+                               // to check if it should stop sending requests.
 
     if (n == -1)
         n = INT64_MAX;
@@ -665,6 +703,7 @@ database_deserialize_entries(
         };
 
         callback(&entry, udata);
+        did = true;
     }
 
     sqlite3_reset(stmt);
@@ -678,7 +717,7 @@ database_deserialize_entries(
         return FAIL;
     }
 
-    return OK;
+    return did ? OK : FAIL;
 }
 
 static void
