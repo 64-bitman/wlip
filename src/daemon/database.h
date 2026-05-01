@@ -60,6 +60,8 @@ struct database
         sqlite3_stmt *entry_exists;
 
         sqlite3_stmt *delete_entry;
+
+        sqlite3_stmt *n_entries;
     } stmt;
 };
 
@@ -81,4 +83,5 @@ bool database_id_exists(struct database *db, int64_t id);
 int database_save_int_setting(struct database *db, const char *key, int64_t val);
 int database_get_int_setting(struct database *db, const char *key, int64_t *val);
 int database_delete_entry(struct database *db, int64_t id);
+int64_t database_get_history_size(struct database *db);
 // clang-format on

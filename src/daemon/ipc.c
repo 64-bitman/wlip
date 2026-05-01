@@ -29,6 +29,7 @@ static void ipc_request_get_mime_type(struct ipc_connection *ct, struct json_obj
 static void ipc_request_set_entry(struct ipc_connection *ct, struct json_object *req, int64_t serial);
 static void ipc_request_delete_entry(struct ipc_connection *ct, struct json_object *req, int64_t serial);
 static void ipc_request_subscribe( struct ipc_connection *ct, struct json_object *req, int64_t serial);
+static void ipc_request_history_info(struct ipc_connection *ct, struct json_object *req, int64_t serial);
 // clang-format on
 
 /*
@@ -332,6 +333,8 @@ request_handler(struct json_object *req, void *udata)
             ipc_request_delete_entry(ct, req, serial);
         else if (strcmp(type, "subscribe") == 0)
             ipc_request_subscribe(ct, req, serial);
+        else if (strcmp(type, "history_info") == 0)
+            ipc_request_history_info(ct, req, serial);
     }
     json_object_put(req);
 }
@@ -617,7 +620,10 @@ ipc_request_get_mime_type(
     struct json_object *resp = json_object_new_object();
 
     if (resp == NULL)
+    {
+        IPC_ERROR_MEMORY(ct, serial);
         goto exit;
+    }
 
     if (data != NULL && len > 0)
     {
@@ -727,4 +733,30 @@ ipc_request_subscribe(
 
     ct->subbed_events |= event;
     ipc_connection_send_success(ct, serial);
+}
+
+static void
+ipc_request_history_info(
+    struct ipc_connection *ct, struct json_object *req, int64_t serial
+)
+{
+    struct database    *db = &ct->ipc->wlip->database;
+    struct json_object *resp = json_object_new_object();
+
+    if (resp == NULL)
+    {
+        IPC_ERROR_MEMORY(ct, serial);
+        return;
+    }
+
+    int64_t n = database_get_history_size(db);
+
+    if (n == -1)
+    {
+        ipc_connection_send_error(ct, serial, "db", "Error querying database");
+        json_object_put(resp);
+        return;
+    }
+    add_json_integer(resp, "size", n, true);
+    ipc_connection_queue_response(ct, resp, "response", serial);
 }

@@ -304,6 +304,12 @@ database_prepare_statements(struct database *db)
         ) != SQLITE_OK)
         goto fail;
 
+    statement = "SELECT COUNT(1) FROM Entries;";
+    if (sqlite3_prepare_v2(
+            db->handle, statement, -1, &db->stmt.n_entries, NULL
+        ) != SQLITE_OK)
+        goto fail;
+
     return OK;
 fail:
     log_error(
@@ -369,6 +375,9 @@ database_finalize_statements(struct database *db)
 
     if (db->stmt.delete_entry != NULL)
         sqlite3_finalize(db->stmt.delete_entry);
+
+    if (db->stmt.n_entries != NULL)
+        sqlite3_finalize(db->stmt.n_entries);
 }
 
 /*
@@ -901,4 +910,28 @@ database_delete_entry(struct database *db, int64_t id)
     }
 
     return OK;
+}
+
+/*
+ * Return number of entries in history, or -1 on failure.
+ */
+int64_t
+database_get_history_size(struct database *db)
+{
+    sqlite3_stmt *stmt = db->stmt.n_entries;
+
+    int ret = sqlite3_step(stmt);
+
+    if (ret != SQLITE_ROW)
+    {
+        log_warn(
+            "Error getting number of entries: %s", sqlite3_errmsg(db->handle)
+        );
+        sqlite3_reset(stmt);
+        return -1;
+    }
+
+    int64_t n = sqlite3_column_int64(stmt, 0);
+    sqlite3_reset(stmt);
+    return n;
 }
