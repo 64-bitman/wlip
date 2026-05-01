@@ -2,21 +2,22 @@
 
 #include "ipc_client.h"
 #include <glib.h>
-#include <stdbool.h>
-
-struct gui;
 
 struct ipc
 {
-    bool              running;
-    struct ipc_client client;
-    struct gui       *gui;
+    GAsyncQueue *request_queue;
+    GThread     *thread;
 
-    GSource *source;
-    void    *fd_tag;
+    int efd; // Used to wakeup IPC thread
+    int run; // Used by main and IPC thread
+
+    event_callback event_cb;
+    void          *event_udata;
 };
 
 // clang-format off
-int ipc_init(struct ipc *ipc, struct gui *gui);
+int ipc_init(struct ipc *ipc, event_callback event_cb, void *udata);
 void ipc_uninit(struct ipc *ipc);
+
+void ipc_queue_request(struct ipc *ipc, const char *type, struct json_object *req,request_callback callback, void *udata);
 // clang-format on

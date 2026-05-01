@@ -1,8 +1,7 @@
-#pragma once
-
 #include <glib-object.h>
-#include <glib.h>
-#include <gtk-4.0/gtk/gtk.h>
 
-typedef struct _ClipboardEntry ClipboardEntry;
+#define CLIPBOARD_TYPE_ENTRY (clipboard_entry_get_type())
 G_DECLARE_FINAL_TYPE(ClipboardEntry, clipboard_entry, CLIPBOARD, ENTRY, GObject)
+
+// clang-format off
+// clang-format on

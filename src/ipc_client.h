@@ -25,7 +25,9 @@ struct ipc_client
     int fd;
     int events;
 
-    event_callback       event_callback;
+    event_callback event_callback;
+    void          *event_udata;
+
     struct json_tokener *tokener;
     int64_t              serial_gen;
 

@@ -157,6 +157,15 @@ response_handler(struct json_object *resp, void *udata)
     struct ipc_client  *client = udata;
     struct ipc_request *req, *next, *prev = NULL;
     int64_t             serial;
+    const char         *type = get_json_string(resp, "type");
+
+    if (type == NULL)
+        goto exit;
+    if (strcmp(type, "event") == 0)
+    {
+        client->event_callback(resp, client->event_udata);
+        return;
+    }
 
     if (get_json_integer(resp, "serial", &serial) == FAIL)
         goto exit;

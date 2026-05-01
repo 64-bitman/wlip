@@ -1,6 +1,6 @@
-#include "gui.h"
 #include "log.h"
 #include "util.h"
+#include "wlipgtk.h"
 #include <glib-unix.h>
 #include <glib.h>
 
@@ -37,15 +37,15 @@ main(int argc, char **argv)
     signals[0] = g_unix_signal_add(SIGINT, signal_handler, loop);
     signals[1] = g_unix_signal_add(SIGTERM, signal_handler, loop);
 
-    struct gui gui;
+    struct wlipgtk wlipgtk;
 
-    if (gui_init(&gui, loop) == FAIL)
+    if (wlipgtk_init(&wlipgtk, loop) == FAIL)
         goto exit;
 
     g_main_loop_run(loop);
 
-    gui_uninit(&gui);
     log_info("Exiting...");
+    wlipgtk_uninit(&wlipgtk);
 exit:
     for (uint i = 0; i < N_ELEMENTS(signals); i++)
         g_source_remove(signals[i]);
