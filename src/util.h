@@ -104,4 +104,6 @@ void add_json_string(struct json_object *obj, const char *key, const char *val, 
 
 int process_json_buffer(const char *buf, size_t buflen, struct json_tokener *tokener, json_callback callback, void *udata);
 const char *find_mime_type(struct json_object *arr, enum mime_type_class class);
+
+int set_fd_nonblocking(int fd);
 // clang-format on

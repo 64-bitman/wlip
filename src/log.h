@@ -33,6 +33,8 @@ enum log_level
         log_error(fmt, ##__VA_ARGS__);                                         \
         abort();                                                               \
     } while (false)
+#define log_errabort(fmt, ...)                                                 \
+    log_abort(fmt ": %s", ##__VA_ARGS__, strerror(errno));
 
 // clang-format off
 void log_init(const char *log_path);

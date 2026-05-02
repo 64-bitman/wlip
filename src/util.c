@@ -440,3 +440,18 @@ find_mime_type(struct json_object *arr, enum mime_type_class class)
     }
     return NULL;
 }
+
+/*
+ * Make the given fd non blocking. Returns OK on success and FAIL on failure.
+ */
+int
+set_fd_nonblocking(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+    {
+        log_errwarn("Error setting fd non-blocking");
+        return FAIL;
+    }
+    return OK;
+}

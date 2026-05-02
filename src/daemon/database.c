@@ -1,9 +1,12 @@
 #include "database.h"
 #include "config.h"
 #include "ext-data-control-v1.h"
+#include "ipc.h"
 #include "log.h"
 #include "sha256.h"
 #include "util.h"
+#include "wlip.h"
+#include <assert.h>
 #include <errno.h>
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -70,7 +73,7 @@ static const char *SCHEMA =
     "       DELETE FROM Data WHERE Data_id = OLD.Data_id "
     "           AND NOT EXISTS (SELECT 1 FROM Mime_types WHERE"
     "               Data_id = OLD.Data_id); "
-    "END;"
+    "   END;"
     "";
 
 static int database_prepare_statements(struct database *db);
@@ -83,12 +86,12 @@ static void database_finalize_statements(struct database *db);
  * memory database. Returns OK on success and FAIL on failure.
  */
 int
-database_init(struct database *db, const char *dir, struct config *config)
+database_init(struct database *db, const char *dir, struct wlip *wlip)
 {
     char *tofree = NULL;
     char *path;
 
-    if (config->persist)
+    if (wlip->config.persist)
     {
         if (dir == NULL)
         {
@@ -134,8 +137,8 @@ database_init(struct database *db, const char *dir, struct config *config)
     char *pragma_statement = wlip_strdup_printf(
         "PRAGMA page_size = %d;"
         "PRAGMA cache_size = %d;",
-        config->page_size,
-        config->cache_size
+        wlip->config.page_size,
+        wlip->config.cache_size
     );
 
     if (pragma_statement != NULL)
@@ -169,10 +172,8 @@ database_init(struct database *db, const char *dir, struct config *config)
         return FAIL;
     }
 
-    // Apply relevant config options to "Settings" table
-    database_save_int_setting(db, "Max_entries", config->max_entries);
-
-    db->config = config;
+    database_save_int_setting(db, "Max_entries", wlip->config.max_entries);
+    db->wlip = wlip;
 
     return OK;
 }
@@ -426,11 +427,13 @@ database_do_transaction(struct database *db, enum database_transaction type)
 
 /*
  * Serialize an entry into the database and return its ID. If "entry" is NULL,
- * then a new entry is created automatically, and its ID is returned. Returns -1
- * on failure.
+ * then a new entry is created automatically, and its ID is returned. If
+ * "selection" is true, IPC events wont be emitted. Returns -1 on failure.
  */
 int64_t
-database_serialize_entry(struct database *db, struct database_entry *entry)
+database_serialize_entry(
+    struct database *db, struct database_entry *entry, bool selection
+)
 {
     sqlite3_stmt *stmt;
 
@@ -471,9 +474,17 @@ database_serialize_entry(struct database *db, struct database_entry *entry)
     }
 
     if (entry == NULL)
+    {
         id = sqlite3_column_int64(stmt, 0);
+        if (!selection)
+            ipc_emit_event_change(&db->wlip->ipc, id, "new");
+    }
     else
+    {
         id = entry->id;
+        if (!selection)
+            ipc_emit_event_change(&db->wlip->ipc, id, "update");
+    }
 
 exit:
     sqlite3_reset(stmt);
@@ -908,6 +919,8 @@ database_delete_entry(struct database *db, int64_t id)
         );
         return FAIL;
     }
+
+    ipc_emit_event_change(&db->wlip->ipc, id, "delete");
 
     return OK;
 }

@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <wayland-util.h>
 
+struct wlip;
+
 enum database_transaction
 {
     TRANSACTION_BEGIN,
@@ -35,7 +37,7 @@ struct database
 {
     sqlite3 *handle;
 
-    struct config *config;
+    struct wlip *wlip;
 
     struct
     {
@@ -66,10 +68,10 @@ struct database
 };
 
 // clang-format off
-int database_init(struct database *db, const char *dir, struct config *config);
+int database_init(struct database *db, const char *dir, struct wlip *wlip);
 void database_uninit(struct database *db);
 int database_do_transaction(struct database *db, enum database_transaction type);
-int64_t database_serialize_entry(struct database *db, struct database_entry *entry);
+int64_t database_serialize_entry(struct database *db, struct database_entry *entry, bool selection);
 int database_serialize_mime_type(struct database *db, int64_t id, const char *mime_type, const uint8_t *data_id, uint8_t *data, size_t len);
 int database_offer_mime_types(struct database *db, int64_t id, struct ext_data_control_source_v1 *source);
 sqlite3_stmt *database_deserialize_mime_type_data(struct database *db, int64_t id, const char *mime_type);

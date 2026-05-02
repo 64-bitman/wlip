@@ -31,7 +31,7 @@ wlip_init(
         config_uninit(&wlip->config);
         return FAIL;
     }
-    if (database_init(&wlip->database, database_dir, &wlip->config) == FAIL)
+    if (database_init(&wlip->database, database_dir, wlip) == FAIL)
     {
         config_uninit(&wlip->config);
         wayland_uninit(&wlip->wayland);
@@ -101,7 +101,7 @@ wlip_new_selection(
         return -1;
 
     SHA256_CTX sha_hash;
-    int64_t    id = database_serialize_entry(&wlip->database, NULL);
+    int64_t    id = database_serialize_entry(&wlip->database, NULL, true);
 
     if (id == -1)
         goto exit;
@@ -228,7 +228,10 @@ exit:
         return -1;
 
     if (did_something)
+    {
         ipc_emit_event_selection(&wlip->ipc, id);
+        ipc_emit_event_change(&wlip->ipc, id, "new");
+    }
 
     return did_something ? id : -1;
 }

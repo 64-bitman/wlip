@@ -6,7 +6,6 @@
 #include "wayland_base.h"
 #include "wlip.h"
 #include <errno.h> // IWYU pragma: keep
-#include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -696,7 +695,7 @@ data_source_event_send(
         goto fail;
     }
 
-    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) == -1)
+    if (set_fd_nonblocking(fd) == FAIL)
     {
         log_errwarn("Error making fd non blocking");
         goto fail;
