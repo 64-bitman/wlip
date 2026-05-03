@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util.h"
 #include <json.h>
 #include <poll.h>
 
@@ -11,8 +12,9 @@ struct ipc_message
     const char         *data;
     size_t              remaining;
 
-    request_callback callback;
-    void            *udata;
+    request_callback  callback;
+    void             *udata;
+    userdata_callback udata_callback;
 
     int64_t serial;
 
@@ -42,7 +44,7 @@ struct ipc_client
 // clang-format off
 int ipc_client_init(struct ipc_client *client);
 void ipc_client_uninit(struct ipc_client *client);
-int ipc_client_queue_request(struct ipc_client *client, struct json_object *obj, request_callback callback, void *udata);
+int ipc_client_queue_request(struct ipc_client *client, struct json_object *obj, request_callback callback, void *udata, userdata_callback udata_callback);
 void ipc_client_prepare(struct ipc_client *client, struct pollfd *pfd);
 int ipc_client_check(struct ipc_client *client, int revents);
 struct json_object *ipc_client_roundtrip(struct ipc_client *client, const char *type, struct json_object *req);

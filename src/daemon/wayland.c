@@ -145,7 +145,7 @@ wayland_set_selection(struct wayland *wayland, int64_t id)
 
     wayland->entry_id = id;
     database_save_int_setting(&wayland->wlip->database, "Last_entry", id);
-    ipc_emit_event_selection(&wayland->wlip->ipc, id);
+    ipc_emit_event(&wayland->wlip->ipc, IPC_EVENT_SELECTION, id);
 
     wl_list_for_each(seat, &wayland->seats, link)
     {

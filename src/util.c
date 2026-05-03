@@ -333,6 +333,15 @@ add_json_string(
 }
 
 /*
+ * Add a string value to a JSON array.
+ */
+void
+add_json_arr_string(struct json_object *arr, const char *val)
+{
+    json_object_array_add(arr, json_object_new_string(val));
+}
+
+/*
  * Process the buffer containing JSON messages delimited by newlines. For each
  * message, call "callbak". Returns OK on success and FAIL on failure.
  */

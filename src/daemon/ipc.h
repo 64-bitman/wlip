@@ -16,9 +16,6 @@ enum ipc_event
     IPC_EVENT_CHANGE = 1 << 1
 };
 
-#define IPC_EVENT_SELECTION_STR "selection"
-#define IPC_EVENT_CHANGE_STR "change"
-
 struct ipc_message
 {
     struct json_object *resp;
@@ -60,9 +57,7 @@ struct ipc
 int ipc_init(struct ipc *ipc, const char *socket_path, struct config *config, struct wlip *wlip);
 void ipc_uninit(struct ipc *ipc);
 
-void ipc_emit_event(struct ipc *ipc, enum ipc_event type, struct json_object *args);
-void ipc_emit_event_selection(struct ipc *ipc, int64_t id);
-void ipc_emit_event_change(struct ipc *ipc, int64_t id, const char *change);
+void ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...);
 int ipc_set_pfds(struct ipc *ipc, struct pollfd *pfds, int max);
 void ipc_check_pfds(struct ipc *ipc, struct pollfd *pfds);
 // clang-format on

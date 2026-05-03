@@ -229,8 +229,8 @@ exit:
 
     if (did_something)
     {
-        ipc_emit_event_selection(&wlip->ipc, id);
-        ipc_emit_event_change(&wlip->ipc, id, "new");
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_SELECTION, id);
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_CHANGE, id, "new");
     }
 
     return did_something ? id : -1;

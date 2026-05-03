@@ -477,13 +477,13 @@ database_serialize_entry(
     {
         id = sqlite3_column_int64(stmt, 0);
         if (!selection)
-            ipc_emit_event_change(&db->wlip->ipc, id, "new");
+            ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, "new");
     }
     else
     {
         id = entry->id;
         if (!selection)
-            ipc_emit_event_change(&db->wlip->ipc, id, "update");
+            ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, "update");
     }
 
 exit:
@@ -920,7 +920,7 @@ database_delete_entry(struct database *db, int64_t id)
         return FAIL;
     }
 
-    ipc_emit_event_change(&db->wlip->ipc, id, "delete");
+    ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, "delete");
 
     return OK;
 }

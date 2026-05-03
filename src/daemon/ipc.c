@@ -43,6 +43,25 @@ static void ipc_request_handle_subscribe(struct ipc_request *req);
 static void ipc_request_handle_history_size(struct ipc_request *req);
 // clang-format on
 
+#define REQUEST_HANDLER(name) {STRINGIFY(name), ipc_request_handle_##name}
+static struct
+{
+    const char *name;
+    void (*callback)(struct ipc_request *);
+} REQUEST_HANDLERS[] = {
+    REQUEST_HANDLER(entry),
+    REQUEST_HANDLER(mimetype),
+    REQUEST_HANDLER(set),
+    REQUEST_HANDLER(delete),
+    REQUEST_HANDLER(subscribe),
+    REQUEST_HANDLER(history_size)
+};
+
+static const char *EVENTS[] = {
+    "selection",
+    "change",
+};
+
 /*
  * Initialize IPC server at "socket_path". If "socket_path" is NULL, then
  * automatically create a path based on the Wayland display name. Returns OK on
@@ -218,25 +237,52 @@ ipc_check(int revents, void *udata)
 }
 
 /*
- * Emit an event to all subscribers. Takes ownership of "args".
+ * Emit an event to all subscribers. Takes ownership of "args". Variadic
+ * arguments depend on the even type:
+ *
+ * "selection": int64_t id
+ * "change": int64_t id, const char *change
  */
 void
-ipc_emit_event(struct ipc *ipc, enum ipc_event type, struct json_object *event)
+ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
 {
-    struct ipc_connection *ct;
+    struct json_object *event = json_object_new_object();
 
+    if (event == NULL)
+    {
+        log_errwarn("Error allocating JSON object");
+        return;
+    }
+
+    va_list ap;
+
+    va_start(ap, type);
     switch (type)
     {
     case IPC_EVENT_SELECTION:
-        add_json_string(event, "event", IPC_EVENT_SELECTION_STR, true);
+    {
+        int64_t id = va_arg(ap, int64_t);
+        add_json_integer(event, "id", id, true);
         break;
+    }
     case IPC_EVENT_CHANGE:
-        add_json_string(event, "event", IPC_EVENT_CHANGE_STR, true);
+    {
+        int64_t     id = va_arg(ap, int64_t);
+        const char *change = va_arg(ap, const char *);
+
+        add_json_integer(event, "id", id, true);
+        add_json_string(event, "change", change, true);
         break;
+    }
     default:
         log_abort("Unknown event type %d", type);
     }
+    va_end(ap);
+
     add_json_string(event, "type", "event", true);
+    add_json_string(event, "event", EVENTS[1 >> type], true);
+
+    struct ipc_connection *ct;
 
     wl_list_for_each(ct, &ipc->connections, link)
     {
@@ -244,31 +290,6 @@ ipc_emit_event(struct ipc *ipc, enum ipc_event type, struct json_object *event)
             ipc_connection_queue_message(ct, event);
     }
     json_object_put(event);
-}
-
-void
-ipc_emit_event_selection(struct ipc *ipc, int64_t id)
-{
-    struct json_object *event = json_object_new_object();
-
-    if (event != NULL)
-    {
-        add_json_integer(event, "id", id, true);
-        ipc_emit_event(ipc, IPC_EVENT_SELECTION, event);
-    }
-}
-
-void
-ipc_emit_event_change(struct ipc *ipc, int64_t id, const char *change)
-{
-    struct json_object *event = json_object_new_object();
-
-    if (event != NULL)
-    {
-        add_json_integer(event, "id", id, true);
-        add_json_string(event, "change", change, true);
-        ipc_emit_event(ipc, IPC_EVENT_CHANGE, event);
-    }
 }
 
 /*
@@ -341,19 +362,17 @@ request_handler(struct json_object *req_obj, void *udata)
 
     if (type != NULL)
     {
-        if (strcmp(type, "entry") == 0)
-            ipc_request_handle_entry(&req);
-        else if (strcmp(type, "mimetype") == 0)
-            ipc_request_handle_mimetype(&req);
-        else if (strcmp(type, "set") == 0)
-            ipc_request_handle_set(&req);
-        else if (strcmp(type, "delete") == 0)
-            ipc_request_handle_delete(&req);
-        else if (strcmp(type, "subscribe") == 0)
-            ipc_request_handle_subscribe(&req);
-        else if (strcmp(type, "history_size") == 0)
-            ipc_request_handle_history_size(&req);
-        else
+        bool did = false;
+
+        for (int i = 0; i < N_ELEMENTS(REQUEST_HANDLERS); i++)
+            if (strcmp(type, REQUEST_HANDLERS[i].name) == 0)
+            {
+                REQUEST_HANDLERS[i].callback(&req);
+                did = true;
+                break;
+            }
+
+        if (!did)
             ipc_request_respond_error(&req, ERRMSG_INVALID_ARGS);
     }
 
@@ -708,10 +727,12 @@ ipc_request_handle_subscribe(struct ipc_request *req)
             {
                 const char *event_name = json_object_get_string(j_event);
 
-                if (strcmp(event_name, IPC_EVENT_SELECTION_STR) == 0)
-                    event = IPC_EVENT_SELECTION;
-                if (strcmp(event_name, IPC_EVENT_CHANGE_STR) == 0)
-                    event = IPC_EVENT_CHANGE;
+                for (int i = 0; i < N_ELEMENTS(EVENTS); i++)
+                    if (strcmp(EVENTS[i], event_name) == 0)
+                    {
+                        event = 1 << i;
+                        break;
+                    }
             }
 
             if (event == IPC_EVENT_NONE)

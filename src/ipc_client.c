@@ -83,11 +83,15 @@ ipc_client_uninit(struct ipc_client *client)
     for (req = client->requests; req != NULL; req = next)
     {
         next = req->next;
+        if (req->udata_callback != NULL)
+            req->udata_callback(req->udata);
         ipc_request_free(req);
     }
     for (req = client->pending_requests; req != NULL; req = next)
     {
         next = req->next;
+        if (req->udata_callback != NULL)
+            req->udata_callback(req->udata);
         ipc_request_free(req);
     }
 
@@ -104,7 +108,8 @@ ipc_client_queue_request(
     struct ipc_client  *client,
     struct json_object *obj,
     request_callback    callback,
-    void               *udata
+    void               *udata,
+    userdata_callback   udata_callback
 )
 {
     struct ipc_message *req = malloc(sizeof(*req));
@@ -126,6 +131,7 @@ ipc_client_queue_request(
 
     req->callback = callback;
     req->udata = udata;
+    req->udata_callback = udata_callback;
 
     req->next = NULL;
     if (client->requests == NULL)
@@ -287,7 +293,7 @@ ipc_client_roundtrip(
     add_json_string(req, "type", type, true);
 
     if (ipc_client_queue_request(
-            client, req, roundtrip_response_handler, &resp
+            client, req, roundtrip_response_handler, &resp, NULL
         ) == FAIL)
         return NULL;
 

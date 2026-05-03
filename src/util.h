@@ -81,6 +81,8 @@ enum mime_type_class
     MIMETYPE_CLASS_IMAGE
 };
 
+typedef void (*userdata_callback)(void *udata);
+
 // Note that callback takes ownership of "obj"
 typedef void (*json_callback)(struct json_object *obj, void *udata);
 
@@ -101,6 +103,7 @@ int get_json_boolean(struct json_object *obj, const char *member, bool *store);
 void add_json_integer(struct json_object *obj, const char *key, int64_t val, bool key_is_static);
 void add_json_boolean(struct json_object *obj, const char *key, bool val, bool key_is_static);
 void add_json_string(struct json_object *obj, const char *key, const char *val, bool key_is_static);
+void add_json_arr_string(struct json_object *arr, const char *val);
 
 int process_json_buffer(const char *buf, size_t buflen, struct json_tokener *tokener, json_callback callback, void *udata);
 const char *find_mime_type(struct json_object *arr, enum mime_type_class class);
