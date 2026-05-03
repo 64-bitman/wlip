@@ -3,6 +3,11 @@
 #include <glib-unix.h>
 #include <glib.h>
 
+// clang-format off
+int init(GMainLoop *loop);
+void uninit(void);
+// clang-format on
+
 static gboolean
 signal_handler(void *data)
 {
@@ -36,12 +41,27 @@ main(int argc, char **argv)
     signals[0] = g_unix_signal_add(SIGINT, signal_handler, loop);
     signals[1] = g_unix_signal_add(SIGTERM, signal_handler, loop);
 
+    if (init(loop) == FAIL)
+        goto exit;
+
     g_main_loop_run(loop);
 
     log_info("Exiting...");
-
+    uninit();
+exit:
     for (uint i = 0; i < N_ELEMENTS(signals); i++)
         g_source_remove(signals[i]);
 
     return EXIT_SUCCESS;
+}
+
+int
+init(GMainLoop *loop)
+{
+    return OK;
+}
+
+void
+uninit(void)
+{
 }

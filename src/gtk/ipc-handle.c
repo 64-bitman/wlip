@@ -3,6 +3,7 @@
 #include "log.h"
 #include "util.h"
 #include <assert.h>
+#include <gio/gio.h>
 #include <glib.h>
 #include <json.h>
 #include <poll.h>
@@ -36,19 +37,15 @@ typedef enum
 static uint obj_signals[N_SIGNALS] = {0};
 
 // clang-format off
-static void ipc_handle_signal_event(IPCHandle *self, IPCEvent *event, void *udata);
-
 static void *ipc_handle_thread(IPCHandle *handle);
 static void ipc_handle_thread_wakeup(IPCHandle *self);
 
-static void ipc_request_data_free(struct ipc_request_data *data);
-
-static IPCEvent *ipc_event_ref(IPCEvent *event);
-static void ipc_event_unref(IPCEvent *event);
+static void put_json_object(struct json_object *obj);
 // clang-format on
 
-#define IPC_TYPE_EVENT (ipc_event_get_type())
-G_DEFINE_BOXED_TYPE(IPCEvent, ipc_event, ipc_event_ref, ipc_event_unref);
+typedef struct json_object JsonObj;
+#define JSON_TYPE_OBJ (json_obj_get_type())
+G_DEFINE_BOXED_TYPE(JsonObj, json_obj, json_object_get, put_json_object);
 
 static void
 ipc_handle_finalize(GObject *object)
@@ -73,25 +70,24 @@ ipc_handle_class_init(IPCHandleClass *class)
 
     gobject_class->finalize = ipc_handle_finalize;
 
-    obj_signals[SIGNAL_EVENT] = g_signal_new_class_handler(
+    obj_signals[SIGNAL_EVENT] = g_signal_new(
         "event",
         G_TYPE_FROM_CLASS(class),
-        G_SIGNAL_NO_HOOKS | G_SIGNAL_NO_RECURSE,
-        G_CALLBACK(ipc_handle_signal_event),
+        G_SIGNAL_NO_HOOKS | G_SIGNAL_NO_RECURSE | G_SIGNAL_DETAILED,
+        0,
         NULL,
         NULL,
         NULL,
         G_TYPE_NONE,
         1,
-        IPC_TYPE_EVENT
+        JSON_TYPE_OBJ
     );
 }
 
 static void
 ipc_handle_init(IPCHandle *self)
 {
-    self->request_queue =
-        g_async_queue_new_full((GDestroyNotify)ipc_request_data_free);
+    self->request_queue = g_async_queue_new_full(g_object_unref);
 }
 
 IPCHandle *
@@ -102,7 +98,7 @@ ipc_handle_new(void)
     handle->efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 
     if (handle->efd == -1)
-        log_errabort("Error creating eventfd:%s");
+        log_errabort("Error creating eventfd");
 
     g_atomic_int_set(&handle->run, 1);
     handle->thread =
@@ -111,80 +107,57 @@ ipc_handle_new(void)
     return handle;
 }
 
-static gboolean
-ipc_invoke_handler(struct ipc_request_data *data)
+struct ipc_event_udata
 {
-    data->callback(data->obj, data->udata);
-    data->obj = NULL;
+    struct json_object *obj;
+    IPCHandle          *handle;
+};
+
+static void
+ipc_event_udata_free(struct ipc_event_udata *udata)
+{
+    json_object_put(udata->obj);
+    g_free(udata);
+}
+
+static gboolean
+ipc_event_invoke(struct ipc_event_udata *udata)
+{
+    const char *type = get_json_string(udata->obj, "event");
+    if (type != NULL)
+    {
+        GQuark detail = g_quark_from_string(type);
+        g_signal_emit(
+            udata->handle, obj_signals[SIGNAL_EVENT], detail, udata->obj
+        );
+    }
+    // No need to free "udata", that is handled by the source
     return G_SOURCE_REMOVE;
 }
 
 static void
-ipc_response_handler(struct json_object *resp, void *udata)
+ipc_event_handler(struct json_object *event, IPCHandle *handle)
 {
-    struct ipc_request_data *data = udata;
+    // Emit signal in global context, not IPC thread.
+    struct ipc_event_udata *udata = g_new(struct ipc_event_udata, 1);
 
-    assert(data->obj == NULL);
-    if (data->callback == NULL)
-    {
-        json_object_put(resp);
-        ipc_request_data_free(data);
-        return;
-    }
-
-    data->obj = resp;
-
-    // Invoke callback in global main context
-    g_main_context_invoke_full(
-        NULL,
-        G_PRIORITY_DEFAULT,
-        (GSourceFunc)ipc_invoke_handler,
-        data,
-        (GDestroyNotify)ipc_request_data_free
-    );
-}
-
-static gboolean
-ipc_event_invoke_handler(IPCEvent *event)
-{
-    IPCHandle *handle = event->ptr;
-
-    g_signal_emit(handle, obj_signals[SIGNAL_EVENT], 0, event);
-    return G_SOURCE_REMOVE;
-}
-
-static void
-ipc_event_handler(struct json_object *event_obj, IPCHandle *handle)
-{
-    const char *event_type = get_json_string(event_obj, "event");
-
-    if (event_type == NULL)
-    {
-        json_object_put(event_obj);
-        return;
-    }
-
-    IPCEvent *event = g_new(IPCEvent, 1);
-
-    event->event = event_obj;
-    event->event_type = event_type;
-    event->ptr = handle;
+    udata->obj = event;
+    udata->handle = handle;
 
     g_main_context_invoke_full(
         NULL,
         G_PRIORITY_DEFAULT,
-        (GSourceFunc)ipc_event_invoke_handler,
-        event,
-        (GDestroyNotify)ipc_event_unref
+        (GSourceFunc)ipc_event_invoke,
+        udata,
+        (GDestroyNotify)ipc_event_udata_free
     );
 }
 
 static void
-ipc_handle_signal_event(
-    IPCHandle *self UNUSED, IPCEvent *event, void *udata UNUSED
-)
+ipc_response_handler(struct json_object *resp, GTask *task)
 {
-    ipc_event_unref(event);
+    g_task_return_pointer(task, resp, (GDestroyNotify)put_json_object);
+    g_object_unref(task);
 }
 
 static void *
@@ -235,14 +208,19 @@ ipc_handle_thread(IPCHandle *handle)
                 exit(EXIT_FAILURE);
 
         // Flush any pending requests to the client
-        struct ipc_request_data *data;
+        GTask *task;
 
-        while ((data = g_async_queue_try_pop(handle->request_queue)) != NULL)
+        while ((task = g_async_queue_try_pop(handle->request_queue)) != NULL)
         {
+            struct json_object *obj = g_task_get_task_data(task);
+
             ipc_client_queue_request(
-                &client, data->obj, ipc_response_handler, data
+                &client,
+                obj,
+                (request_callback)ipc_response_handler,
+                task,
+                g_object_unref
             );
-            data->obj = NULL;
         }
     }
 
@@ -261,71 +239,102 @@ ipc_handle_thread_wakeup(IPCHandle *self)
 }
 
 static void
-ipc_request_data_free(struct ipc_request_data *data)
+put_json_object(struct json_object *obj)
 {
-    if (data->obj != NULL)
-        json_object_put(data->obj);
-    g_free(data);
+    json_object_put(obj);
 }
 
 /*
- * Queue a request to be sent to the daemon, taking ownershio of "req". If
- * "callback" is NULL, then any responses are ignored. If "req" is NULL, then a
- * new JSON empty json object is created.
+ * Send a request to the daemon. The variadic arguments depend on "type":
+ *
+ * "entry": int64_t index
+ * "mimetype": int64_t id, const char *mimetype
+ * "set": int64_t id
+ * "delete": int64_t id,
+ * "subscribe": const char *first_event, ..., NULL
+ * "history_size": void
  */
 void
-ipc_handle_queue_request(
+ipc_handle_request_async(
     IPCHandle          *self,
-    const char         *type,
-    struct json_object *req,
-    request_callback    callback,
-    void               *udata
+    IPCRequestType      type,
+    GCancellable       *cancellable,
+    GAsyncReadyCallback callback,
+    void               *udata,
+    ...
 )
 {
     g_assert(IPC_IS_HANDLE(self));
-    g_assert(type != NULL);
+    g_assert(cancellable == NULL || G_IS_CANCELLABLE(cancellable));
 
-    struct ipc_request_data *data = g_new(struct ipc_request_data, 1);
+    GTask *task = g_task_new(self, cancellable, callback, udata);
+
+    struct json_object *req = json_object_new_object();
 
     if (req == NULL)
-        req = json_object_new_object();
-    if (req == NULL)
-        log_abort("Error allocating JSON object");
-    add_json_string(req, "type", type, true);
+        log_errabort("Error allocating JSON object");
 
-    data->obj = req;
-    data->callback = callback;
-    data->udata = udata;
+    va_list ap;
+    va_start(ap, udata);
 
-    g_async_queue_push(self->request_queue, data);
+    switch (type)
+    {
+    case IPC_REQUEST_TYPE_ENTRY:
+        add_json_string(req, "type", "entry", true);
+        add_json_integer(req, "index", va_arg(ap, int64_t), true);
+        break;
+    case IPC_REQUEST_TYPE_MIMETYPE:
+        add_json_string(req, "type", "mimetype", true);
+        add_json_integer(req, "id", va_arg(ap, int64_t), true);
+        add_json_string(req, "mimetype", va_arg(ap, const char *), true);
+        break;
+    case IPC_REQUEST_TYPE_SET:
+        add_json_string(req, "type", "set", true);
+        add_json_integer(req, "id", va_arg(ap, int64_t), true);
+        break;
+    case IPC_REQUEST_TYPE_DELETE:
+        add_json_string(req, "type", "delete", true);
+        add_json_integer(req, "id", va_arg(ap, int64_t), true);
+        break;
+    case IPC_REQUEST_TYPE_SUBSCRIBE:
+        add_json_string(req, "type", "subscribe", true);
+
+        struct json_object *arr = json_object_new_array();
+
+        if (arr == NULL)
+            log_errabort("Error allocating JSON array");
+
+        while (true)
+        {
+            const char *event = va_arg(ap, const char *);
+
+            if (event == NULL)
+                break;
+            add_json_arr_string(arr, event);
+        }
+        json_object_object_add(req, "events", arr);
+        break;
+    case IPC_REQUEST_TYPE_HISTORY_SIZE:
+        break;
+    default:
+        log_abort("Unknown request type %d", type);
+    }
+    va_end(ap);
+
+    g_task_set_source_tag(task, ipc_handle_request_async);
+    g_task_set_task_data(task, req, (GDestroyNotify)put_json_object);
+
+    g_async_queue_push(self->request_queue, task);
     ipc_handle_thread_wakeup(self);
 }
 
-void
-ipc_handle_subscribe(IPCHandle *self, const char *event)
+struct json_object *
+ipc_handle_request_finish(IPCHandle *self, GAsyncResult *result, GError **error)
 {
     g_assert(IPC_IS_HANDLE(self));
-    g_assert(event != NULL);
+    g_assert(G_IS_ASYNC_RESULT(result));
+    g_assert(g_async_result_is_tagged(result, ipc_handle_request_async));
+    g_assert(error == NULL || *error == NULL);
 
-    struct json_object *obj = json_object_new_object();
-
-    if (obj == NULL)
-        log_abort("Error allocating JSON object");
-
-    add_json_string(obj, "event", event, true);
-    ipc_handle_queue_request(self, "subscribe", obj, NULL, NULL);
-}
-
-static IPCEvent *
-ipc_event_ref(IPCEvent *event)
-{
-    json_object_get(event->event);
-    return event;
-}
-
-static void
-ipc_event_unref(IPCEvent *event)
-{
-    if (json_object_put(event->event))
-        g_free(event);
+    return g_task_propagate_pointer(G_TASK(result), error);
 }
