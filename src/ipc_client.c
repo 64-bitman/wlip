@@ -325,6 +325,14 @@ ipc_request_free(struct ipc_message *req)
     free(req);
 }
 
+bool
+ipc_is_error(struct json_object *resp)
+{
+    const char *type = get_json_string(resp, "type");
+
+    return type == NULL || strcmp(type, "error") == 0;
+}
+
 const char *
 ipc_get_error_desc(struct json_object *resp)
 {

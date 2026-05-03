@@ -36,16 +36,12 @@ typedef enum
 
 static uint obj_signals[N_SIGNALS] = {0};
 
+G_DEFINE_BOXED_TYPE(JsonObj, json_obj, json_object_get, put_json_object);
+
 // clang-format off
 static void *ipc_handle_thread(IPCHandle *handle);
 static void ipc_handle_thread_wakeup(IPCHandle *self);
-
-static void put_json_object(struct json_object *obj);
 // clang-format on
-
-typedef struct json_object JsonObj;
-#define JSON_TYPE_OBJ (json_obj_get_type())
-G_DEFINE_BOXED_TYPE(JsonObj, json_obj, json_object_get, put_json_object);
 
 static void
 ipc_handle_finalize(GObject *object)
@@ -238,7 +234,7 @@ ipc_handle_thread_wakeup(IPCHandle *self)
     write(self->efd, &x, sizeof(x));
 }
 
-static void
+void
 put_json_object(struct json_object *obj)
 {
     json_object_put(obj);
@@ -247,7 +243,7 @@ put_json_object(struct json_object *obj)
 /*
  * Send a request to the daemon. The variadic arguments depend on "type":
  *
- * "entry": int64_t index
+ * "entry": int64_t index, int64_t id -- If "index" is negative, then id is used
  * "mimetype": int64_t id, const char *mimetype
  * "set": int64_t id
  * "delete": int64_t id,
@@ -281,7 +277,12 @@ ipc_handle_request_async(
     {
     case IPC_REQUEST_TYPE_ENTRY:
         add_json_string(req, "type", "entry", true);
-        add_json_integer(req, "index", va_arg(ap, int64_t), true);
+
+        int64_t index = va_arg(ap, int64_t);
+
+        if (index < 0)
+            index = va_arg(ap, int64_t);
+        add_json_integer(req, "index", index, true);
         break;
     case IPC_REQUEST_TYPE_MIMETYPE:
         add_json_string(req, "type", "mimetype", true);

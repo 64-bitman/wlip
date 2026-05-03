@@ -26,6 +26,15 @@ G_DECLARE_FINAL_TYPE(IPCHandle, ipc_handle, IPC, HANDLE, GObject);
 
 // clang-format off
 IPCHandle *ipc_handle_new(void);
+
+void put_json_object(struct json_object *obj);
+
 void ipc_handle_request_async(IPCHandle *handle, IPCRequestType type, GCancellable *cancellable, GAsyncReadyCallback callback, void *udata, ...);
 struct json_object *ipc_handle_request_finish(IPCHandle *self, GAsyncResult *result, GError **error);
 // clang-format on
+
+typedef struct json_object JsonObj;
+#define JSON_TYPE_OBJ (json_obj_get_type())
+GType json_obj_get_type(void);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(JsonObj, put_json_object)

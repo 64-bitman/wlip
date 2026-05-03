@@ -100,6 +100,7 @@ const char *get_json_string(struct json_object *obj, const char *member);
 int get_json_string_len(struct json_object *obj, const char *member);
 int get_json_integer(struct json_object *obj, const char *member, int64_t *store);
 int get_json_boolean(struct json_object *obj, const char *member, bool *store);
+const char *get_json_arr_string(struct json_object *arr, size_t idx);
 void add_json_integer(struct json_object *obj, const char *key, int64_t val, bool key_is_static);
 void add_json_boolean(struct json_object *obj, const char *key, bool val, bool key_is_static);
 void add_json_string(struct json_object *obj, const char *key, const char *val, bool key_is_static);

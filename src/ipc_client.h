@@ -51,5 +51,6 @@ struct json_object *ipc_client_roundtrip(struct ipc_client *client, const char *
 
 void ipc_request_free(struct ipc_message *req);
 
+bool ipc_is_error(struct json_object *resp);
 const char *ipc_get_error_desc(struct json_object *resp);
 // clag-format off

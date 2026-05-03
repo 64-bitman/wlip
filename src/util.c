@@ -282,6 +282,20 @@ get_json_boolean(struct json_object *obj, const char *member, bool *store)
 }
 
 /*
+ * Return string value of element at "index" for array "arr", else NULL.
+ */
+const char *
+get_json_arr_string(struct json_object *arr, size_t idx)
+{
+    struct json_object *j_obj = json_object_array_get_idx(arr, idx);
+
+    if (j_obj == NULL || !json_object_is_type(j_obj, json_type_string))
+        return NULL;
+
+    return json_object_get_string(j_obj);
+}
+
+/*
  * Add an integer value to a JSON object.
  */
 void

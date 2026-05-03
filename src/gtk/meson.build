@@ -5,6 +5,8 @@
 # )
 
 gui_sources += files(
-  'ipc-handle.c',
+  'clipboard-entry.c',
+  'clipboard-list.c',
+  'ipc-handle.c'
 )
 gui_includes += include_directories('.')

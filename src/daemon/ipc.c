@@ -665,6 +665,7 @@ ipc_request_handle_set(struct ipc_request *req)
         return;
     }
 
+    // TODO: update "update_time" for entry
     wayland_set_selection(&req->ct->ipc->wlip->wayland, id);
     ipc_request_respond_success(req);
 }

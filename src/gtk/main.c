@@ -2,11 +2,8 @@
 #include "util.h"
 #include <glib-unix.h>
 #include <glib.h>
-
-// clang-format off
-int init(GMainLoop *loop);
-void uninit(void);
-// clang-format on
+#include <gtk-4.0/gtk/gtk.h>
+#include <gtk4-layer-shell/gtk4-layer-shell.h>
 
 static gboolean
 signal_handler(void *data)
@@ -41,27 +38,26 @@ main(int argc, char **argv)
     signals[0] = g_unix_signal_add(SIGINT, signal_handler, loop);
     signals[1] = g_unix_signal_add(SIGTERM, signal_handler, loop);
 
-    if (init(loop) == FAIL)
-        goto exit;
+    gtk_init();
+
+    GtkWindow *win = GTK_WINDOW(gtk_window_new());
+
+    gtk_layer_init_for_window(win);
+    gtk_layer_set_exclusive_zone(win, TRUE);
+    gtk_layer_set_keyboard_mode(win, GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+    gtk_layer_set_layer(win, GTK_LAYER_SHELL_LAYER_OVERLAY);
+
+    gtk_window_set_default_size(win, 500, 600);
+    gtk_window_present(win);
 
     g_main_loop_run(loop);
 
     log_info("Exiting...");
-    uninit();
-exit:
+
+    gtk_window_destroy(win);
+
     for (uint i = 0; i < N_ELEMENTS(signals); i++)
         g_source_remove(signals[i]);
 
     return EXIT_SUCCESS;
-}
-
-int
-init(GMainLoop *loop)
-{
-    return OK;
-}
-
-void
-uninit(void)
-{
 }
