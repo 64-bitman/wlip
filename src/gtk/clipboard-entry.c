@@ -22,6 +22,7 @@ struct _ClipboardEntry
     GHashTable *mime_types;
     const char *display_mime_type; // Mime type that should be displayed to the
                                    // user. NULL if there are none (binary data)
+    ContentType content_type;
 
     // If false, then entry has not beem loaded yet, still waiting for a
     // response.
@@ -137,18 +138,33 @@ entry_callback(
         g_hash_table_insert(entry->mime_types, g_strdup(mime_type), NULL);
     }
 
-    if (g_hash_table_contains(entry->mime_types, "image/png") == 0)
+    if (g_hash_table_contains(entry->mime_types, "image/png"))
+    {
         entry->display_mime_type = "image/png";
-    else if (g_hash_table_contains(entry->mime_types, "image/jpeg") == 0)
+        entry->content_type = CONTENT_TYPE_IMAGE;
+    }
+    else if (g_hash_table_contains(entry->mime_types, "image/jpeg"))
+    {
         entry->display_mime_type = "image/jpeg";
+        entry->content_type = CONTENT_TYPE_IMAGE;
+    }
     else if (g_hash_table_contains(
                  entry->mime_types, "text/plain;charset=utf-8"
-             ) == 0)
+             ))
+    {
         entry->display_mime_type = "text/plain;charset=utf-8";
-    else if (g_hash_table_contains(entry->mime_types, "text/plain") == 0)
-        entry->display_mime_type = "text/plain;charset=utf-8";
+        entry->content_type = CONTENT_TYPE_TEXT;
+    }
+    else if (g_hash_table_contains(entry->mime_types, "text/plain"))
+    {
+        entry->display_mime_type = "text/plain";
+        entry->content_type = CONTENT_TYPE_TEXT;
+    }
     else
+    {
         entry->display_mime_type = NULL;
+        entry->content_type = CONTENT_TYPE_BINARY;
+    }
 
     entry->loaded = true;
     g_signal_emit(entry, obj_signals[SIGNAL_REFRESH], 0);
@@ -246,7 +262,7 @@ exit:
  * entry must already be loaded.
  */
 void
-clipboard_load_mime_type_async(
+clipboard_entry_load_mime_type_async(
     ClipboardEntry     *self,
     const char         *mime_type,
     GCancellable       *cancellable,
@@ -270,7 +286,7 @@ clipboard_load_mime_type_async(
     tdata->entry = g_object_ref(self);
     sprintf(tdata->mime_type, "%s", mime_type);
 
-    g_task_set_source_tag(task, clipboard_load_mime_type_async);
+    g_task_set_source_tag(task, clipboard_entry_load_mime_type_async);
     g_task_set_task_data(task, tdata, (GDestroyNotify)mimetype_udata_free);
 
     ipc_handle_request_async(
@@ -285,14 +301,65 @@ clipboard_load_mime_type_async(
 }
 
 GBytes *
-clipboard_load_mime_type_finish(
+clipboard_entry_load_mime_type_finish(
     ClipboardEntry *self, GAsyncResult *result, GError **error
 )
 {
-    g_assert(IPC_IS_HANDLE(self));
+    g_assert(CLIPBOARD_IS_ENTRY(self));
     g_assert(G_IS_ASYNC_RESULT(result));
-    g_assert(g_async_result_is_tagged(result, clipboard_load_mime_type_async));
+    g_assert(
+        g_async_result_is_tagged(result, clipboard_entry_load_mime_type_async)
+    );
     g_assert(error == NULL || *error == NULL);
 
     return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+bool
+clipboard_entry_is_loaded(ClipboardEntry *self)
+{
+    g_assert(CLIPBOARD_IS_ENTRY(self));
+
+    return self->loaded;
+}
+
+ContentType
+clipboard_entry_get_content_type(ClipboardEntry *self)
+{
+    g_assert(CLIPBOARD_IS_ENTRY(self));
+
+    return self->content_type;
+}
+
+const char *
+clipboard_entry_get_display_mime_type(ClipboardEntry *self)
+{
+    g_assert(CLIPBOARD_IS_ENTRY(self));
+
+    return self->display_mime_type;
+}
+
+/*
+ * Get the data for the given mime type. If mime type is loaded, then "store" is
+ * set to it and OK is returned. If mime type is not loaded, then "store" is set
+ * to NULL and OK is returned. If mime type does not exist, then FAIL is
+ * returned.
+ */
+int
+clipboard_entry_get_mime_type_data(
+    ClipboardEntry *self, const char *mime_type, GBytes **store
+)
+{
+    g_assert(CLIPBOARD_IS_ENTRY(self));
+
+    GBytes *bytes;
+
+    if (g_hash_table_lookup_extended(
+            self->mime_types, mime_type, NULL, (void **)&bytes
+        ))
+    {
+        *store = bytes;
+        return OK;
+    }
+    return FAIL;
 }

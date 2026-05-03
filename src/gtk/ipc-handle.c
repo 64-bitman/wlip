@@ -212,7 +212,7 @@ ipc_handle_thread(IPCHandle *handle)
 
             ipc_client_queue_request(
                 &client,
-                obj,
+                json_object_get(obj),
                 (request_callback)ipc_response_handler,
                 task,
                 g_object_unref
@@ -287,7 +287,7 @@ ipc_handle_request_async(
     case IPC_REQUEST_TYPE_MIMETYPE:
         add_json_string(req, "type", "mimetype", true);
         add_json_integer(req, "id", va_arg(ap, int64_t), true);
-        add_json_string(req, "mimetype", va_arg(ap, const char *), true);
+        add_json_string(req, "mime_type", va_arg(ap, const char *), true);
         break;
     case IPC_REQUEST_TYPE_SET:
         add_json_string(req, "type", "set", true);
@@ -316,6 +316,7 @@ ipc_handle_request_async(
         json_object_object_add(req, "events", arr);
         break;
     case IPC_REQUEST_TYPE_HISTORY_SIZE:
+        add_json_string(req, "type", "history_size", true);
         break;
     default:
         log_abort("Unknown request type %d", type);

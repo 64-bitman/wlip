@@ -1,9 +1,19 @@
+#include "clipboard-entry.h"
+#include "clipboard-list.h"
+#include "entry-box.h"
 #include "log.h"
 #include "util.h"
 #include <glib-unix.h>
 #include <glib.h>
 #include <gtk-4.0/gtk/gtk.h>
 #include <gtk4-layer-shell/gtk4-layer-shell.h>
+
+// clang-format off
+static void setup_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
+static void bind_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
+static void unbind_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
+static void teardown_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
+// clang-format on
 
 static gboolean
 signal_handler(void *data)
@@ -41,13 +51,35 @@ main(int argc, char **argv)
     gtk_init();
 
     GtkWindow *win = GTK_WINDOW(gtk_window_new());
+    g_autoptr(IPCHandle) ipc_handle = ipc_handle_new();
 
     gtk_layer_init_for_window(win);
-    gtk_layer_set_exclusive_zone(win, TRUE);
     gtk_layer_set_keyboard_mode(win, GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
     gtk_layer_set_layer(win, GTK_LAYER_SHELL_LAYER_OVERLAY);
 
     gtk_window_set_default_size(win, 500, 600);
+
+    ClipboardList      *list = clipboard_list_new(ipc_handle);
+    GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
+
+    g_signal_connect(factory, "setup", G_CALLBACK(setup_cb), NULL);
+    g_signal_connect(factory, "bind", G_CALLBACK(bind_cb), NULL);
+    /* The following two lines can be left out. The handlers do nothing. */
+    g_signal_connect(factory, "unbind", G_CALLBACK(unbind_cb), NULL);
+    g_signal_connect(factory, "teardown", G_CALLBACK(teardown_cb), NULL);
+
+    GtkWidget *view = gtk_list_view_new(
+        GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(list))),
+        factory
+    );
+    GtkWidget *scr = gtk_scrolled_window_new();
+
+    gtk_window_set_child(GTK_WINDOW(win), scr);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scr), view);
+    gtk_scrolled_window_set_policy(
+        GTK_SCROLLED_WINDOW(scr), GTK_POLICY_NEVER, GTK_POLICY_ALWAYS
+    );
+
     gtk_window_present(win);
 
     g_main_loop_run(loop);
@@ -60,4 +92,43 @@ main(int argc, char **argv)
         g_source_remove(signals[i]);
 
     return EXIT_SUCCESS;
+}
+
+static void
+setup_cb(
+    GtkSignalListItemFactory *self, GtkListItem *item, gpointer udata UNUSED
+)
+{
+    GtkWidget *ebox = entry_box_new();
+
+    gtk_list_item_set_child(item, ebox);
+}
+
+static void
+bind_cb(
+    GtkSignalListItemFactory *self, GtkListItem *item, gpointer udata UNUSED
+)
+{
+    GtkWidget      *ebox = gtk_list_item_get_child(item);
+    ClipboardEntry *entry = gtk_list_item_get_item(item);
+    uint            pos = gtk_list_item_get_position(item);
+
+    entry_box_set(ENTRY_BOX(ebox), entry, pos);
+}
+
+static void
+unbind_cb(
+    GtkSignalListItemFactory *self, GtkListItem *item, gpointer udata UNUSED
+)
+{
+    GtkWidget *ebox = gtk_list_item_get_child(item);
+
+    entry_box_set(ENTRY_BOX(ebox), NULL, 0);
+}
+
+static void
+teardown_cb(
+    GtkSignalListItemFactory *self, GtkListItem *item, gpointer udata UNUSED
+)
+{
 }
