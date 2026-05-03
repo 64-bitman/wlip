@@ -2,7 +2,6 @@
 #include "log.h"
 #include "util.h"
 #include <errno.h> // IWYU pragma: keep
-#include <fcntl.h>
 #include <json.h>
 #include <poll.h>
 #include <stdio.h>
@@ -65,7 +64,7 @@ ipc_client_init(struct ipc_client *client)
         return FAIL;
     }
 
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    set_fd_nonblocking(fd);
 
     client->fd = fd;
     client->requests = NULL;
@@ -79,7 +78,7 @@ ipc_client_init(struct ipc_client *client)
 void
 ipc_client_uninit(struct ipc_client *client)
 {
-    struct ipc_request *req, *next;
+    struct ipc_message *req, *next;
 
     for (req = client->requests; req != NULL; req = next)
     {
@@ -108,7 +107,7 @@ ipc_client_queue_request(
     void               *udata
 )
 {
-    struct ipc_request *req = malloc(sizeof(*req));
+    struct ipc_message *req = malloc(sizeof(*req));
 
     if (req == NULL)
     {
@@ -155,7 +154,7 @@ static void
 response_handler(struct json_object *resp, void *udata)
 {
     struct ipc_client  *client = udata;
-    struct ipc_request *req, *next, *prev = NULL;
+    struct ipc_message *req, *next, *prev = NULL;
     int64_t             serial;
     const char         *type = get_json_string(resp, "type");
 
@@ -225,7 +224,7 @@ try_write:
     if (revents & POLLOUT)
     {
         // Write any pending responses from the queue
-        struct ipc_request *req = client->requests;
+        struct ipc_message *req = client->requests;
         ssize_t             w;
 
         if (req->remaining == 0)
@@ -313,9 +312,20 @@ ipc_client_roundtrip(
  * Note that this does not unlink the request from the list
  */
 void
-ipc_request_free(struct ipc_request *req)
+ipc_request_free(struct ipc_message *req)
 {
     if (req->req != NULL)
         json_object_put(req->req);
     free(req);
+}
+
+const char *
+ipc_get_error_desc(struct json_object *resp)
+{
+    const char *desc = get_json_string(resp, "desc");
+
+    if (desc == NULL)
+        return "(unknown)";
+    else
+        return desc;
 }
