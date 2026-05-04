@@ -18,14 +18,18 @@ add_project_arguments(
 )
 
 if get_option('buildtype').startswith('debug')
-  add_project_arguments('-DDEBUG', '-ggdb3', language : 'c')
+  add_project_arguments(
+    '-DDEBUG',
+    '-ggdb3',
+    # '-pg',
+    # '-no-pie',
+    language : 'c'
+  )
+  # add_project_link_arguments(['-pg', '-no-pie'], language: 'c')
 endif
 
 daemon_sources = []
 daemon_includes = []
-
-cli_sources = []
-cli_includes = []
 
 gui_sources = []
 gui_includes = []
@@ -42,6 +46,8 @@ sqlite_dep = dependency('sqlite3')
 gtkls_dep = dependency('gtk4-layer-shell-0')
 glib_dep = dependency('gtk4')
 gtk4_dep = dependency('glib-2.0')
+glycin_dep = dependency('glycin-2')
+glycingtk4_dep = dependency('glycin-gtk4-2')
 
 subdir('src')
 
@@ -63,18 +69,6 @@ wlip = executable(
   install: true
 )
 
-wlip_cli = executable(
-  'wlipctl',
-  'src/cli/main.c',
-  cli_sources,
-  client_sources,
-  sources,
-  version_h,
-  include_directories: [includes, cli_includes],
-  dependencies: [json_dep],
-  install: true
-)
-
 wlip_gui = executable(
   'wlipgtk',
   'src/gtk/main.c',
@@ -83,6 +77,6 @@ wlip_gui = executable(
   sources,
   version_h,
   include_directories: [includes, gui_includes],
-  dependencies: [wl_dep, gtkls_dep, glib_dep, gtk4_dep, json_dep],
+  dependencies: [wl_dep, gtkls_dep, glib_dep, gtk4_dep, glycin_dep, glycingtk4_dep, json_dep],
   install: true
 )

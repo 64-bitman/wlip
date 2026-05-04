@@ -10,5 +10,5 @@ G_DECLARE_FINAL_TYPE(EntryBox, entry_box, ENTRY, BOX, GtkWidget)
 
 // clang-format off
 GtkWidget *entry_box_new(void);
-void entry_box_set(EntryBox *self, ClipboardEntry *entry, uint position);
+void entry_box_set(EntryBox *self, ClipboardEntry *entry, GtkListItem *item, uint pos);
 // clang-format on

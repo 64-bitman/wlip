@@ -8,5 +8,4 @@ client_sources += files('ipc_client.c')
 
 subdir('protocol')
 subdir('daemon')
-subdir('cli')
 subdir('gtk')

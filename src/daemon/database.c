@@ -452,7 +452,7 @@ database_serialize_entry(
     }
     else
     {
-        int64_t t = get_time_ns(CLOCK_REALTIME) / 1000000; //
+        int64_t t = get_time_ns(CLOCK_REALTIME) / 1000000; // msec
 
         stmt = db->stmt.serialize_entry;
         sqlite3_bind_int64(stmt, 1, t);

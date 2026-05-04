@@ -101,7 +101,8 @@ entry_callback(
 
     if (resp == NULL)
     {
-        log_warn("Error refreshing entry");
+        if (error->code != G_IO_ERROR_CANCELLED)
+            log_warn("Error refreshing entry");
         return;
     }
     if (ipc_is_error(resp))
@@ -177,7 +178,7 @@ entry_callback(
  * entry has been refreshed.
  */
 void
-clipboard_entry_refresh(ClipboardEntry *self, uint index)
+clipboard_entry_refresh(ClipboardEntry *self, uint index, GCancellable *cancel)
 {
     g_assert(CLIPBOARD_IS_ENTRY(self));
 
@@ -185,7 +186,7 @@ clipboard_entry_refresh(ClipboardEntry *self, uint index)
         ipc_handle_request_async(
             self->ipc_handle,
             IPC_REQUEST_TYPE_ENTRY,
-            NULL,
+            cancel,
             (GAsyncReadyCallback)entry_callback,
             g_object_ref(self),
             -1,
@@ -195,7 +196,7 @@ clipboard_entry_refresh(ClipboardEntry *self, uint index)
         ipc_handle_request_async(
             self->ipc_handle,
             IPC_REQUEST_TYPE_ENTRY,
-            NULL,
+            cancel,
             (GAsyncReadyCallback)entry_callback,
             g_object_ref(self),
             index
@@ -327,6 +328,7 @@ ContentType
 clipboard_entry_get_content_type(ClipboardEntry *self)
 {
     g_assert(CLIPBOARD_IS_ENTRY(self));
+    g_assert(self->loaded);
 
     return self->content_type;
 }
@@ -335,6 +337,7 @@ const char *
 clipboard_entry_get_display_mime_type(ClipboardEntry *self)
 {
     g_assert(CLIPBOARD_IS_ENTRY(self));
+    g_assert(self->loaded);
 
     return self->display_mime_type;
 }
@@ -351,6 +354,7 @@ clipboard_entry_get_mime_type_data(
 )
 {
     g_assert(CLIPBOARD_IS_ENTRY(self));
+    g_assert(self->loaded);
 
     GBytes *bytes;
 
@@ -362,4 +366,13 @@ clipboard_entry_get_mime_type_data(
         return OK;
     }
     return FAIL;
+}
+
+int64_t
+clipboard_entry_get_creation_time(ClipboardEntry *self)
+{
+    g_assert(CLIPBOARD_IS_ENTRY(self));
+    g_assert(self->loaded);
+
+    return self->creation_time;
 }

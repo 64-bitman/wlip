@@ -324,6 +324,7 @@ ipc_handle_request_async(
     va_end(ap);
 
     g_task_set_source_tag(task, ipc_handle_request_async);
+    g_task_set_priority(task, G_PRIORITY_DEFAULT_IDLE);
     g_task_set_task_data(task, req, (GDestroyNotify)put_json_object);
 
     g_async_queue_push(self->request_queue, task);

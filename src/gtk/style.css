@@ -1,0 +1,41 @@
+@define-color theme_bg_color #161616ff;
+@define-color theme_entry_bg_color rgb(40, 40, 40);
+@define-color theme_fg_color rgb(255, 255, 255);
+@define-color theme_selected rgb(60, 60, 60);
+
+.window {
+    background-color: @theme_bg_color;
+    border-radius: 10px;
+    padding: 12px;
+}
+
+.list {
+    border-radius: 10px;
+    background-color: @theme_bg_color;
+    outline-color: white;
+}
+
+.list row:selected {
+    border-radius: 10px;
+    background-color: @theme_selected;
+}
+
+.entry {
+    background-color: @theme_entry_bg_color;
+    color: @theme_fg_color;
+    border-radius: 10px;
+
+    margin: 5px;
+}
+
+.entry-header {
+    padding: 10px;
+}
+
+.content {
+    padding: 10px;
+    margin: 10px;
+    background-color: @theme_bg_color;
+    color: @theme_fg_color;
+    border-radius: 10px;
+}

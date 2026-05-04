@@ -9,21 +9,13 @@ struct _ClipboardList
 {
     GObject parent;
 
-    // Number of entries that list model currently represents. It is
-    // incrementally increased to "actual_size".
-    //
-    // This is done so that the list view/signal factory doesnt just do all the
-    // bind requests in one go, freezing the ui temporarily.
-    int64_t size;
-    uint    timer_id;
-
     // Total number of entries from daemon (not size of cache)
-    int64_t actual_size;
+    int64_t size;
 
     // Mapping of positions to entries. Index of entry in array is its position.
     // Note that some elements may be NULL, if get_item() was called beyond the
     // current length of the array.
-    GArray *cache;
+    GPtrArray *cache;
 
     IPCHandle *ipc_handle;
 };
@@ -57,8 +49,7 @@ clipboard_list_finalize(GObject *object)
 {
     ClipboardList *list = CLIPBOARD_LIST(object);
 
-    g_assert(list->timer_id == 0);
-    g_array_unref(list->cache);
+    g_ptr_array_unref(list->cache);
 
     G_OBJECT_CLASS(clipboard_list_parent_class)->finalize(object);
 }
@@ -75,8 +66,7 @@ static void
 clipboard_list_init(ClipboardList *self)
 {
     self->size = 0;
-    self->cache = g_array_new(FALSE, TRUE, sizeof(ClipboardEntry *));
-    g_array_set_clear_func(self->cache, g_object_unref);
+    self->cache = g_ptr_array_new_with_free_func(g_object_unref);
 }
 
 ClipboardList *
@@ -97,26 +87,6 @@ clipboard_list_new(IPCHandle *ipc_handle)
     );
 
     return list;
-}
-
-static gboolean
-increment_size_callback(ClipboardList *list)
-{
-    int64_t  old = list->size;
-    int64_t  change = 10;
-    gboolean ret = G_SOURCE_CONTINUE;
-
-    if (list->size + change > list->actual_size)
-    {
-        change = list->actual_size - list->size;
-        list->timer_id = 0;
-        ret = G_SOURCE_REMOVE;
-    }
-    list->size += change;
-
-    g_list_model_items_changed(G_LIST_MODEL(list), old, 0, change);
-
-    return ret;
 }
 
 static void
@@ -144,15 +114,9 @@ history_size_callback(
     if (get_json_integer(resp, "size", &size) == FAIL)
         return;
 
-    list->actual_size = size;
-    if (list->timer_id == 0)
-        list->timer_id = g_timeout_add_full(
-            G_PRIORITY_LOW,
-            100,
-            (GSourceFunc)increment_size_callback,
-            g_object_ref(list),
-            g_object_unref
-        );
+    list->size = size;
+    g_list_model_items_changed(G_LIST_MODEL(list), 0, 0, size);
+    g_object_unref(list);
 }
 
 static GType
@@ -172,7 +136,7 @@ clipboard_list_model_get_n_items(GListModel *self)
 static int
 clipboard_list_get_entry(ClipboardList *list, uint pos, ClipboardEntry **entry)
 {
-    ClipboardEntry **arr = (void *)list->cache->data;
+    ClipboardEntry **arr = (void *)list->cache->pdata;
 
     if (pos >= list->size)
         return FAIL;
@@ -195,7 +159,7 @@ clipboard_list_model_get_item(GListModel *self, uint pos)
     if (entry == NULL)
     {
         entry = clipboard_entry_new(list->ipc_handle);
-        g_array_insert_vals(list->cache, pos, &entry, 1);
+        g_ptr_array_insert(list->cache, pos, entry);
     }
 
     return g_object_ref(entry);

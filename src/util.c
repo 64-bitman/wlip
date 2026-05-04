@@ -414,57 +414,6 @@ process_json_buffer(
 }
 
 /*
- * Return the mime type that represents "class" from the JSON array "arr".
- * Returned string is owned by the JSON array object. Returns NULL on failure.
- */
-const char *
-find_mime_type(struct json_object *arr, enum mime_type_class class)
-{
-    static const char *text[] = {
-        "text/plain;charset=utf-8",
-        "text/plain",
-        "TEXT",
-        "STRING",
-        "UTF8_STRING"
-    };
-    static const char *image[] = {"image/png", "image/jpeg"};
-
-    const char **mime_types;
-    int          mime_types_len;
-
-    switch (class)
-    {
-    case MIMETYPE_CLASS_TEXT:
-        mime_types = text;
-        mime_types_len = N_ELEMENTS(text);
-        break;
-    case MIMETYPE_CLASS_IMAGE:
-        mime_types = image;
-        mime_types_len = N_ELEMENTS(image);
-        break;
-    default:
-        log_abort("Unknown mime type class %d", class);
-    }
-
-    size_t len = json_object_array_length(arr);
-
-    for (size_t i = 0; i < len; i++)
-    {
-        struct json_object *j_mime_type = json_object_array_get_idx(arr, i);
-
-        if (json_object_is_type(j_mime_type, json_type_string))
-        {
-            const char *mime_type = json_object_get_string(j_mime_type);
-
-            for (int k = 0; k < mime_types_len; k++)
-                if (strcmp(mime_type, mime_types[k]) == 0)
-                    return mime_type;
-        }
-    }
-    return NULL;
-}
-
-/*
  * Make the given fd non blocking. Returns OK on success and FAIL on failure.
  */
 int

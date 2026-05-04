@@ -4,6 +4,8 @@
 #include "util.h"
 #include <glib-object.h>
 #include <glib.h>
+#include <glycin-2/glycin.h>
+#include <glycin-gtk4-2/glycin-gtk4.h>
 #include <gtk-4.0/gtk/gtk.h>
 
 struct _EntryBox
@@ -16,10 +18,17 @@ struct _EntryBox
     // These are in header_box, aligned horizontally in columns
     GtkWidget *position_number;
     GtkWidget *timestamp_label;
+    uint       timer_id;
 
+    // Used to cancel IPC operation
     GCancellable   *cancel;
     ClipboardEntry *entry;
     uint            handler_id;
+
+    // Used to cancel image loading operation
+    GCancellable *image_cancel;
+
+    GtkListItem *item;
 
     GtkWidget *content; // Can be GtkLabel or GtkPicture
 };
@@ -35,6 +44,7 @@ entry_box_dispose(GObject *object)
     g_assert(ebox->cancel == NULL);
 
     g_clear_object(&ebox->entry);
+    g_clear_object(&ebox->item);
     g_clear_pointer(&ebox->root_box, gtk_widget_unparent);
 
     G_OBJECT_CLASS(entry_box_parent_class)->dispose(object);
@@ -56,23 +66,22 @@ entry_box_init(EntryBox *self)
 {
     self->root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_set_parent(self->root_box, GTK_WIDGET(self));
-    gtk_widget_set_size_request(self->root_box, -1, 200);
+    gtk_widget_add_css_class(self->root_box, "entry");
 
     self->header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_box_set_homogeneous(GTK_BOX(self->header_box), TRUE);
-    gtk_widget_set_margin_start(self->header_box, 10);
-    gtk_widget_set_margin_end(self->header_box, 10);
-    gtk_widget_set_margin_top(self->header_box, 10);
-    gtk_widget_set_margin_bottom(self->header_box, 10);
     gtk_box_append(GTK_BOX(self->root_box), self->header_box);
+    gtk_widget_add_css_class(self->header_box, "entry-header");
 
     self->position_number = gtk_label_new(NULL);
     gtk_box_append(GTK_BOX(self->header_box), self->position_number);
     gtk_widget_set_halign(self->position_number, GTK_ALIGN_START);
+    gtk_widget_add_css_class(self->position_number, "entry-position");
 
     self->timestamp_label = gtk_label_new(NULL);
     gtk_box_append(GTK_BOX(self->header_box), self->timestamp_label);
     gtk_widget_set_halign(self->timestamp_label, GTK_ALIGN_END);
+    gtk_widget_add_css_class(self->timestamp_label, "entry-timestamp");
 
     self->content = NULL;
 }
@@ -84,7 +93,7 @@ entry_box_new(void)
 }
 
 static void
-entry_box_set_content(EntryBox *self, GtkWidget *content)
+entry_box_set_content(EntryBox *self, GtkWidget *content, bool focus)
 {
     g_assert(ENTRY_IS_BOX(self));
     g_assert(content == NULL || GTK_IS_WIDGET(content));
@@ -93,24 +102,146 @@ entry_box_set_content(EntryBox *self, GtkWidget *content)
         gtk_box_remove(GTK_BOX(self->root_box), self->content);
     self->content = content;
     if (content != NULL)
+    {
         gtk_box_append(GTK_BOX(self->root_box), self->content);
+        gtk_widget_add_css_class(self->content, "content");
+    }
+
+    if (self->item != NULL)
+    {
+        gtk_list_item_set_activatable(self->item, focus);
+        gtk_list_item_set_focusable(self->item, focus);
+        gtk_list_item_set_selectable(self->item, focus);
+    }
+
+    // Allow bigger entry for images
+    if (GTK_IS_PICTURE(content))
+        gtk_widget_set_size_request(self->root_box, -1, 400);
+    else
+        gtk_widget_set_size_request(self->root_box, -1, 100);
 }
 
 static void
-entry_box_cancel(EntryBox *self)
+cancel_and_unref(GCancellable **cancel)
 {
-    g_assert(ENTRY_IS_BOX(self));
-    if (self->cancel != NULL)
+    if (*cancel != NULL)
     {
-        g_cancellable_cancel(self->cancel);
-        g_object_unref(self->cancel);
-        self->cancel = NULL;
+        g_cancellable_cancel(*cancel);
+        g_object_unref(*cancel);
+        *cancel = NULL;
     }
 }
 
+static void
+next_frame_callback(GlyImage *image, GAsyncResult *result, EntryBox *ebox)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GlyFrame) frame =
+        gly_image_next_frame_finish(image, result, &error);
+
+    g_object_unref(image);
+    if (frame == NULL)
+    {
+        if (error->code != G_IO_ERROR_CANCELLED)
+            log_warn("Error loading frame: %s", error->message);
+    }
+    else
+    {
+        g_autoptr(GdkTexture) texture = gly_gtk_frame_get_texture(frame);
+        GtkWidget *picture =
+            gtk_picture_new_for_paintable(GDK_PAINTABLE(texture));
+
+        entry_box_set_content(ebox, picture, true);
+    }
+
+    g_clear_object(&ebox->image_cancel);
+    g_object_unref(ebox);
+}
+
+static void
+load_image_callback(GlyLoader *loader, GAsyncResult *result, EntryBox *ebox)
+{
+    g_autoptr(GError) error = NULL;
+    GlyImage *image = gly_loader_load_finish(loader, result, &error);
+
+    g_object_unref(loader);
+    if (image == NULL)
+    {
+        if (error->code != G_IO_ERROR_CANCELLED)
+            log_warn("Error loading image: %s", error->message);
+        g_clear_object(&ebox->image_cancel);
+        g_object_unref(ebox);
+        return;
+    }
+
+    gly_image_next_frame_async(
+        image,
+        ebox->image_cancel,
+        (GAsyncReadyCallback)next_frame_callback,
+        ebox
+    );
+}
+
+static void
+entry_box_update_timestamp(EntryBox *ebox)
+{
+    g_assert(ENTRY_IS_BOX(ebox));
+
+    g_autoptr(GDateTime) now = g_date_time_new_now_local();
+    g_autoptr(GDateTime) since = g_date_time_new_from_unix_local_usec(
+        clipboard_entry_get_creation_time(ebox->entry) * 1000 // Creation time
+                                                              // is in ms
+    );
+
+    GTimeSpan diff = g_date_time_difference(now, since);
+
+    int64_t total_minutes = diff / G_TIME_SPAN_MINUTE;
+    char   *str;
+
+    if (total_minutes < 1)
+        str = g_strdup("just now");
+    else
+    {
+        int64_t days = total_minutes / (60 * 24);
+        int64_t hours = total_minutes % (60 * 24) / 60;
+        int64_t minutes = total_minutes % 60;
+
+        if (days > 0 && hours == 0 && minutes == 0)
+            str = g_strdup_printf("%ld day%s ago", days, days == 1 ? "" : "s");
+        else if (days > 0 && minutes == 0)
+            str = g_strdup_printf(
+                "%ld day%s %ld hr ago", days, days == 1 ? "" : "s", hours
+            );
+        else if (days > 0)
+            str = g_strdup_printf(
+                "%ld day%s %ld hr %ld min ago",
+                days,
+                days == 1 ? "" : "s",
+                hours,
+                minutes
+            );
+        else if (hours == 0)
+            str = g_strdup_printf("%ld min ago", minutes);
+        else if (minutes == 0)
+            str = g_strdup_printf("%ld hr ago", hours);
+        else
+            str = g_strdup_printf("%ld hr %ld min ago", hours, minutes);
+    }
+
+    gtk_label_set_text(GTK_LABEL(ebox->timestamp_label), str);
+    g_free(str);
+}
+
+static gboolean
+timestamp_callback(EntryBox *ebox)
+{
+    entry_box_update_timestamp(ebox);
+    return G_SOURCE_CONTINUE;
+}
+
 /*
- * Set the content of the entry box to given data. Returns OK on success and
- * FAIL on failure.
+ * Set the content of the entry box to given data. Returns OK on success, LOAD
+ * if content is being loaded asynchronously and FAIL on failure.
  */
 static int
 entry_box_set_content_data(EntryBox *self, GBytes *bytes)
@@ -118,6 +249,19 @@ entry_box_set_content_data(EntryBox *self, GBytes *bytes)
     g_assert(ENTRY_IS_BOX(self));
     g_assert(self->entry != NULL);
     g_assert(bytes != NULL);
+
+    if (self->timer_id == 0)
+    {
+        // Add timer for timestamp label
+        self->timer_id = g_timeout_add_full(
+            G_PRIORITY_LOW,
+            60000, // 60 seconds
+            (GSourceFunc)timestamp_callback,
+            g_object_ref(self),
+            g_object_unref
+        );
+        entry_box_update_timestamp(self);
+    }
 
     size_t         len;
     const uint8_t *data = g_bytes_get_data(bytes, &len);
@@ -127,25 +271,33 @@ entry_box_set_content_data(EntryBox *self, GBytes *bytes)
     case CONTENT_TYPE_TEXT:
     {
         char      *tmp = g_strndup((char *)data, len);
-        GtkWidget *label = gtk_label_new(tmp);
-
+        GtkWidget *insc = gtk_inscription_new(tmp);
         g_free(tmp);
 
-        gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-        gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
-
-        GtkScrolledWindow *scr = GTK_SCROLLED_WINDOW(gtk_scrolled_window_new());
-
-        gtk_scrolled_window_set_policy(
-            scr, GTK_POLICY_NEVER, GTK_POLICY_ALWAYS
+        gtk_inscription_set_nat_lines(GTK_INSCRIPTION(insc), 5);
+        gtk_inscription_set_min_lines(GTK_INSCRIPTION(insc), 5);
+        gtk_inscription_set_text_overflow(
+            GTK_INSCRIPTION(insc), GTK_INSCRIPTION_OVERFLOW_ELLIPSIZE_END
         );
-        gtk_scrolled_window_set_max_content_height(scr, 500);
-        gtk_scrolled_window_set_propagate_natural_height(scr, TRUE);
-        gtk_scrolled_window_set_child(scr, label);
+        gtk_inscription_set_yalign(GTK_INSCRIPTION(insc), 0);
 
-        entry_box_set_content(self, GTK_WIDGET(scr));
-
+        entry_box_set_content(self, insc, true);
         return OK;
+    }
+    case CONTENT_TYPE_IMAGE:
+    {
+        GlyLoader *loader = gly_loader_new_for_bytes(bytes);
+
+        cancel_and_unref(&self->image_cancel);
+        self->image_cancel = g_cancellable_new();
+
+        gly_loader_load_async(
+            loader,
+            self->image_cancel,
+            (GAsyncReadyCallback)load_image_callback,
+            g_object_ref(self)
+        );
+        return LOAD;
     }
     default:
         break;
@@ -159,13 +311,13 @@ entry_box_loading(EntryBox *self)
     GtkWidget *spinner = gtk_spinner_new();
 
     gtk_spinner_start(GTK_SPINNER(spinner));
-    entry_box_set_content(self, spinner);
+    entry_box_set_content(self, spinner, false);
 }
 
 static void
 entry_box_binary(EntryBox *self)
 {
-    entry_box_set_content(self, gtk_label_new("<Binary data>"));
+    entry_box_set_content(self, gtk_label_new("<Binary data>"), true);
 }
 
 static void
@@ -183,8 +335,12 @@ load_mime_type_callback(
         goto exit;
     }
 
-    if (entry_box_set_content_data(ebox, data) == FAIL)
+    int ret = entry_box_set_content_data(ebox, data);
+
+    if (ret == FAIL)
         entry_box_binary(ebox);
+    else if (ret == LOAD)
+        entry_box_loading(ebox);
     g_bytes_unref(data);
 
 exit:
@@ -192,6 +348,10 @@ exit:
     g_object_unref(ebox);
 }
 
+/*
+ * Update the content of the entr ybox, if the content data is available,
+ * otherwise fetch it.
+ */
 static void
 entry_box_update_content(EntryBox *self)
 {
@@ -206,7 +366,8 @@ entry_box_update_content(EntryBox *self)
     if (bytes == NULL)
     {
         // Mime type not loaded
-        self->cancel = g_cancellable_new();
+        if (self->cancel == NULL)
+            self->cancel = g_cancellable_new();
         clipboard_entry_load_mime_type_async(
             entry,
             display,
@@ -214,10 +375,15 @@ entry_box_update_content(EntryBox *self)
             (GAsyncReadyCallback)load_mime_type_callback,
             g_object_ref(self)
         );
+        goto loading;
     }
 
-    if (entry_box_set_content_data(self, bytes) == FAIL)
+    int ret = entry_box_set_content_data(self, bytes);
+
+    if (ret == FAIL)
         goto binary;
+    else if (ret == LOAD)
+        goto loading;
 
     return;
 loading:
@@ -231,30 +397,50 @@ static void
 entry_refresh_callback(ClipboardEntry *entry, EntryBox *ebox)
 {
     g_assert(ebox->entry == entry);
+
     entry_box_update_content(ebox);
 }
 
 /*
  * Set/overwrite the ClipboardEntry that this entry box should display. If entry
- * is NULL, then make the entry box empty.
+ * is NULL, then make the entry box empty. Note that if "entry" is not NULL,
+ * then "item" must also be not NULL, and vice versa.
  */
 void
-entry_box_set(EntryBox *self, ClipboardEntry *entry, uint pos)
+entry_box_set(
+    EntryBox *self, ClipboardEntry *entry, GtkListItem *item, uint pos
+)
 {
     g_assert(ENTRY_IS_BOX(self));
     g_assert(entry == NULL || CLIPBOARD_IS_ENTRY(entry));
+    g_assert(
+        (entry == NULL && item == NULL) || (entry != NULL && item != NULL)
+    );
 
-    entry_box_cancel(self);
+    // Cancel previous loads only if we're switching to a different entry
+    if (entry != self->entry)
+    {
+        cancel_and_unref(&self->cancel);
+        cancel_and_unref(&self->image_cancel);
+    }
     if (self->entry != NULL)
     {
         g_signal_handler_disconnect(self->entry, self->handler_id);
         g_object_unref(self->entry);
     }
+    if (self->item != NULL)
+        g_object_unref(self->item);
 
     if (entry == NULL)
     {
         self->entry = NULL;
-        entry_box_set_content(self, NULL);
+        self->item = NULL;
+        if (self->timer_id != 0)
+        {
+            g_source_remove(self->timer_id);
+            self->timer_id = 0;
+        }
+        entry_box_set_content(self, NULL, false);
         return;
     }
     self->handler_id = g_signal_connect_object(
@@ -265,6 +451,7 @@ entry_box_set(EntryBox *self, ClipboardEntry *entry, uint pos)
         G_CONNECT_DEFAULT
     );
     self->entry = g_object_ref(entry);
+    self->item = g_object_ref(item);
 
     static char buf[65];
 
@@ -273,7 +460,9 @@ entry_box_set(EntryBox *self, ClipboardEntry *entry, uint pos)
 
     if (!clipboard_entry_is_loaded(self->entry))
     {
-        clipboard_entry_refresh(self->entry, pos);
+        if (self->cancel == NULL)
+            self->cancel = g_cancellable_new();
+        clipboard_entry_refresh(self->entry, pos, self->cancel);
         entry_box_loading(self);
     }
     else
