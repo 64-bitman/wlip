@@ -57,8 +57,10 @@ wlip_init(
     struct database_entry entry = {0};
     int64_t               id = -1;
 
-    // Load entry from database if any
-    if (database_get_int_setting(&wlip->database, "Last_entry", &id) == FAIL)
+    // Load entry from database if any. "Last_entry" may be -1, if selection was
+    // cleared.
+    if (database_get_int_setting(&wlip->database, "Last_entry", &id) == FAIL ||
+        id == -1)
         // Use most recent entry
         if (database_deserialize_entry(&wlip->database, 0, &entry) == OK)
         {
@@ -230,7 +232,7 @@ exit:
     if (did_something)
     {
         ipc_emit_event(&wlip->ipc, IPC_EVENT_SELECTION, id);
-        ipc_emit_event(&wlip->ipc, IPC_EVENT_CHANGE, id, "new");
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_CHANGE, id, 0, "new");
     }
 
     return did_something ? id : -1;

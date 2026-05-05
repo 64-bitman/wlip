@@ -31,7 +31,7 @@ static const char *SCHEMA =
     ") WITHOUT ROWID;"
     ""
     "CREATE TABLE IF NOT EXISTS Entries ("
-    "   Id              INTEGER PRIMARY KEY,"
+    "   Id              INTEGER PRIMARY KEY AUTOINCREMENT,"
     "   Creation_time   INTEGER NOT NULL," // In ms
     "   Update_time     INTEGER NOT NULL," // In ms
     "   Starred         BOOLEAN NOT NULL"
@@ -299,7 +299,7 @@ database_prepare_statements(struct database *db)
         ) != SQLITE_OK)
         goto fail;
 
-    statement = "DELETE FROM Entries WHERE Id = ?;";
+    statement = "DELETE FROM Entries WHERE Id = ? RETURNING 1;";
     if (sqlite3_prepare_v2(
             db->handle, statement, -1, &db->stmt.delete_entry, NULL
         ) != SQLITE_OK)
@@ -308,6 +308,12 @@ database_prepare_statements(struct database *db)
     statement = "SELECT COUNT(1) FROM Entries;";
     if (sqlite3_prepare_v2(
             db->handle, statement, -1, &db->stmt.n_entries, NULL
+        ) != SQLITE_OK)
+        goto fail;
+
+    statement = "SELECT COUNT(1) FROM Entries WHERE Id < ?;";
+    if (sqlite3_prepare_v2(
+            db->handle, statement, -1, &db->stmt.get_index, NULL
         ) != SQLITE_OK)
         goto fail;
 
@@ -379,6 +385,9 @@ database_finalize_statements(struct database *db)
 
     if (db->stmt.n_entries != NULL)
         sqlite3_finalize(db->stmt.n_entries);
+
+    if (db->stmt.get_index != NULL)
+        sqlite3_finalize(db->stmt.get_index);
 }
 
 /*
@@ -477,13 +486,17 @@ database_serialize_entry(
     {
         id = sqlite3_column_int64(stmt, 0);
         if (!selection)
-            ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, "new");
+            ipc_emit_event(
+                &db->wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)-1, "new"
+            );
     }
     else
     {
         id = entry->id;
         if (!selection)
-            ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, "update");
+            ipc_emit_event(
+                &db->wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)-1, "update"
+            );
     }
 
 exit:
@@ -704,8 +717,6 @@ database_deserialize_entries(
 {
     sqlite3_stmt *stmt = db->stmt.deserialize_entries;
     int           ret;
-    bool          did = false; // We need this since this is used to by the cli
-                               // to check if it should stop sending requests.
 
     if (n == -1)
         n = INT64_MAX;
@@ -723,7 +734,6 @@ database_deserialize_entries(
         };
 
         callback(&entry, udata);
-        did = true;
     }
 
     sqlite3_reset(stmt);
@@ -737,7 +747,7 @@ database_deserialize_entries(
         return FAIL;
     }
 
-    return did ? OK : FAIL;
+    return OK;
 }
 
 static void
@@ -910,17 +920,18 @@ database_delete_entry(struct database *db, int64_t id)
     int ret = sqlite3_step(stmt);
 
     sqlite3_reset(stmt);
-    if (ret != SQLITE_DONE)
+    if (ret != SQLITE_ROW)
     {
-        log_warn(
-            "Error deleting entry %" PRId64 ": %s",
-            id,
-            sqlite3_errmsg(db->handle)
-        );
+        if (ret != SQLITE_DONE)
+            log_warn(
+                "Error deleting entry %" PRId64 ": %s",
+                id,
+                sqlite3_errmsg(db->handle)
+            );
         return FAIL;
     }
 
-    ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, "delete");
+    ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)-1, "delete");
 
     return OK;
 }
@@ -947,4 +958,27 @@ database_get_history_size(struct database *db)
     int64_t n = sqlite3_column_int64(stmt, 0);
     sqlite3_reset(stmt);
     return n;
+}
+
+/*
+ * Get the index of the id in the database. Note that id does not actually have
+ * to exist in the database (i.e. entry was deleted). Returns -1 on failure.
+ */
+int64_t
+database_get_index(struct database *db, int64_t id)
+{
+    sqlite3_stmt *stmt = db->stmt.get_index;
+
+    sqlite3_bind_int64(stmt, 1, id);
+
+    if (sqlite3_step(stmt) != SQLITE_ROW)
+    {
+        log_warn("Error getting index of id: %s", sqlite3_errmsg(db->handle));
+        sqlite3_reset(stmt);
+        return -1;
+    }
+
+    int64_t idx = sqlite3_column_int64(stmt, 0);
+    sqlite3_reset(stmt);
+    return idx;
 }

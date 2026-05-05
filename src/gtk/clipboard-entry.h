@@ -26,4 +26,5 @@ ContentType clipboard_entry_get_content_type(ClipboardEntry *self);
 const char *clipboard_entry_get_display_mime_type(ClipboardEntry *self);
 int clipboard_entry_get_mime_type_data(ClipboardEntry *self, const char *mime_type, GBytes **store);
 int64_t clipboard_entry_get_creation_time(ClipboardEntry *self);
+int clipboard_entry_get_id(ClipboardEntry *self, int64_t *id);
 // clang-format on

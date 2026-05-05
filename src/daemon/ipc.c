@@ -241,7 +241,9 @@ ipc_check(int revents, void *udata)
  * arguments depend on the even type:
  *
  * "selection": int64_t id
- * "change": int64_t id, const char *change
+ * "change": int64_t id, int64_t idx, const char *change -- If idx is -1, then
+ *                                                          it is automatically
+ *                                                          calculated.
  */
 void
 ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
@@ -268,9 +270,21 @@ ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
     case IPC_EVENT_CHANGE:
     {
         int64_t     id = va_arg(ap, int64_t);
+        int64_t     idx = va_arg(ap, int64_t);
         const char *change = va_arg(ap, const char *);
 
+        if (idx == -1)
+            idx = database_get_index(&ipc->wlip->database, id);
+
+        if (idx == -1)
+        {
+            json_object_put(event);
+            va_end(ap);
+            return;
+        }
+
         add_json_integer(event, "id", id, true);
+        add_json_integer(event, "index", idx, true);
         add_json_string(event, "change", change, true);
         break;
     }
@@ -280,7 +294,7 @@ ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
     va_end(ap);
 
     add_json_string(event, "type", "event", true);
-    add_json_string(event, "event", EVENTS[1 >> type], true);
+    add_json_string(event, "event", EVENTS[type >> 1], true);
 
     struct ipc_connection *ct;
 
@@ -689,21 +703,11 @@ ipc_request_handle_delete(struct ipc_request *req)
         return;
     }
 
-    // If entry is the currently active, then use the previous most recent
-    // entry.
-    if (id != req->ct->ipc->wlip->wayland.entry_id)
-        goto exit;
+    // If entry is the currently active, then just clear the selection. Let the
+    // client choose if they want to set the selection to another entry.
+    if (id == req->ct->ipc->wlip->wayland.entry_id)
+        wayland_set_selection(wayland, -1);
 
-    struct database_entry entry = {0};
-
-    if (database_deserialize_entry(db, 0, &entry) == OK)
-        wayland_set_selection(wayland, entry.id);
-    else
-    {
-        ipc_request_respond_error(req, ERRMSG_DB);
-        return;
-    }
-exit:
     ipc_request_respond_success(req);
 }
 

@@ -376,3 +376,18 @@ clipboard_entry_get_creation_time(ClipboardEntry *self)
 
     return self->creation_time;
 }
+
+/*
+ * Return id of entry. If entry is not loaded, FAIL is returned, otherwise OK.
+ */
+int
+clipboard_entry_get_id(ClipboardEntry *self, int64_t *id)
+{
+    g_assert(CLIPBOARD_IS_ENTRY(self));
+
+    if (self->loaded)
+        *id = self->id;
+    else
+        return FAIL;
+    return OK;
+}

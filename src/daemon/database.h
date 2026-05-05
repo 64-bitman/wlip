@@ -64,6 +64,8 @@ struct database
         sqlite3_stmt *delete_entry;
 
         sqlite3_stmt *n_entries;
+
+        sqlite3_stmt *get_index;
     } stmt;
 };
 
@@ -86,4 +88,5 @@ int database_save_int_setting(struct database *db, const char *key, int64_t val)
 int database_get_int_setting(struct database *db, const char *key, int64_t *val);
 int database_delete_entry(struct database *db, int64_t id);
 int64_t database_get_history_size(struct database *db);
+int64_t database_get_index(struct database *db, int64_t id);
 // clang-format on

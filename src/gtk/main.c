@@ -12,6 +12,9 @@
 static void setup_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
 static void bind_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
 static void unbind_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
+
+static void list_view_activate(GtkListView *view, uint pos, ClipboardList *list);
+static void list_changed(GListModel *model, uint pos, uint removed, uint add, GtkListView *view);
 // clang-format on
 
 static gboolean
@@ -96,7 +99,8 @@ main(int argc, char **argv)
 
     gtk_window_set_default_size(win, 500, 600);
 
-    ClipboardList      *list = clipboard_list_new(ipc_handle);
+    ClipboardList *list = clipboard_list_new(ipc_handle);
+
     GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
 
     g_signal_connect(factory, "setup", G_CALLBACK(setup_cb), NULL);
@@ -113,6 +117,17 @@ main(int argc, char **argv)
         factory
     );
     gtk_widget_add_css_class(view, "list");
+    g_signal_connect_object(
+        view,
+        "activate",
+        G_CALLBACK(list_view_activate),
+        list,
+        G_CONNECT_DEFAULT
+    );
+
+    g_signal_connect_object(
+        list, "items-changed", G_CALLBACK(list_changed), view, G_CONNECT_AFTER
+    );
 
     GtkWidget *scr = gtk_scrolled_window_new();
     gtk_widget_add_css_class(scr, "scroll_win");
@@ -175,4 +190,31 @@ unbind_cb(
     GtkWidget *ebox = gtk_list_item_get_child(item);
 
     entry_box_set(ENTRY_BOX(ebox), NULL, NULL, 0);
+}
+
+static void
+list_view_activate(GtkListView *view UNUSED, uint pos, ClipboardList *list)
+{
+    clipboard_list_copy(list, pos);
+}
+
+static void
+list_changed(
+    GListModel *model UNUSED,
+    uint              pos,
+    uint removed      UNUSED,
+    uint              add,
+    GtkListView      *view
+)
+{
+    if (pos != 0 || add <= 0)
+        return;
+
+    // Only scroll to new entry if we are at the top of the view.
+    GtkAdjustment *adj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(view));
+
+    double value = gtk_adjustment_get_value(adj);
+
+    if (value <= gtk_adjustment_get_page_increment(adj))
+        gtk_list_view_scroll_to(view, 0, GTK_LIST_SCROLL_NONE, NULL);
 }

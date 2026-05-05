@@ -9,4 +9,5 @@ G_DECLARE_FINAL_TYPE(ClipboardList, clipboard_list, CLIPBOARD, LIST, GObject)
 
 // clang-format off
 ClipboardList *clipboard_list_new(IPCHandle *ipc_handle);
+void clipboard_list_copy(ClipboardList *self, uint pos);
 // clang-format on

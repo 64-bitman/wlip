@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util.h"
 #include <errno.h>
 #include <stdarg.h>
 
@@ -39,5 +40,5 @@ enum log_level
 // clang-format off
 void log_init(const char *log_path);
 void log_set_level(enum log_level level);
-void log_print_ex( enum log_level level, const char *file, int lnum, const char *fmt, ...);
+void log_print_ex( enum log_level level, const char *file, int lnum, const char *fmt, ...) PRINTFLIKE(4, 5);
 // clang-format on

@@ -33,7 +33,7 @@ struct ipc_connection
     struct wl_list write_queue;
 
     // Events this connection has subscribed to
-    int subbed_events;
+    uint subbed_events;
 
     struct eventsource source;
     struct wl_list     link;
