@@ -237,29 +237,40 @@ eventloop_stop(struct eventloop *loop)
 void
 eventloop_add_timer(struct eventloop *loop, struct eventtimer *timer)
 {
-    struct eventtimer *tmp;
-    insert_list_priority(
-        tmp, &loop->timers, timer, &timer->link, link, priority
-    );
+    struct eventprepare *p;
+
+    wl_list_for_each(p, &loop->timers, link)
+    {
+        if (p->priority > timer->priority)
+            break;
+    }
+    wl_list_insert(p->link.prev, &timer->link);
 }
 
 void
 eventloop_add_source(struct eventloop *loop, struct eventsource *source)
 {
-    struct eventsource *tmp;
+    struct eventprepare *p;
 
-    insert_list_priority(
-        tmp, &loop->sources, source, &source->link, link, priority
-    );
+    wl_list_for_each(p, &loop->sources, link)
+    {
+        if (p->priority > source->priority)
+            break;
+    }
+    wl_list_insert(p->link.prev, &source->link);
 }
 
 void
 eventloop_add_prepare(struct eventloop *loop, struct eventprepare *prepare)
 {
-    struct eventprepare *tmp;
-    insert_list_priority(
-        tmp, &loop->prepares, prepare, &prepare->link, link, priority
-    );
+    struct eventprepare *p;
+
+    wl_list_for_each(p, &loop->prepares, link)
+    {
+        if (p->priority > prepare->priority)
+            break;
+    }
+    wl_list_insert(p->link.prev, &prepare->link);
 }
 
 static void

@@ -569,12 +569,12 @@ selection_event_handler(
 
     if (id != -1)
     {
+        sel->seat->wayland->entry_id = id;
         database_save_int_setting(
             &seat->wayland->wlip->database,
             "Last_entry",
             sel->seat->wayland->entry_id
         );
-        sel->seat->wayland->entry_id = id;
     }
     array_clear(&seat->mime_types);
 }

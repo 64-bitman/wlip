@@ -42,25 +42,6 @@
         wl_list_init(link);                                                    \
     } while (false)
 
-// Insert "elm" before the first element in "list" that has a lower priority.
-// Lower priority value indicates a higher priority
-#define insert_list_priority(pos, list, elm, elml, l, p)                       \
-    do                                                                         \
-    {                                                                          \
-        bool _inserted = false;                                                \
-        wl_list_for_each(pos, list, l)                                         \
-        {                                                                      \
-            if (pos->p >= elm->p)                                              \
-            {                                                                  \
-                wl_list_insert(pos->l.prev, elml);                             \
-                _inserted = true;                                              \
-                break;                                                         \
-            }                                                                  \
-        }                                                                      \
-        if (!_inserted)                                                        \
-            wl_list_insert((list)->prev, elml); /* append to tail */           \
-    } while (false)
-
 #ifdef __GNUC__
 #    define UNUSED __attribute__((__unused__))
 #    define PRINTFLIKE(n, m) __attribute__((format(printf, n, m)))
