@@ -32,7 +32,7 @@ int
 eventloop_init(struct eventloop *loop)
 {
     // Get current signal mask
-    if (sigprocmask(0, NULL, &loop->sigmask) == -1)
+    if (sigprocmask(SIG_BLOCK, NULL, &loop->sigmask) == -1)
     {
         log_errerror("Error getting signal mask");
         return FAIL;
@@ -117,13 +117,14 @@ eventloop_poll(struct eventloop *loop)
     // Add any fd sources to the event loop
     wl_list_for_each(source, &loop->sources, link)
     {
-        pfds[pfds_len].fd = source->fd;
-        pfds[pfds_len].events = source->events;
-        source->pfd_idx = pfds_len;
-        pfds_len++;
-
         if (pfds_len >= MAX_FDS)
-            break;
+            source->pfd_idx = -1;
+        else
+        {
+            pfds[pfds_len].fd = source->fd;
+            pfds[pfds_len].events = source->events;
+            source->pfd_idx = pfds_len++;
+        }
     }
 
     int64_t start = get_time_ns(CLOCK_MONOTONIC), end;
@@ -237,7 +238,7 @@ eventloop_stop(struct eventloop *loop)
 void
 eventloop_add_timer(struct eventloop *loop, struct eventtimer *timer)
 {
-    struct eventprepare *p;
+    struct eventtimer *p;
 
     wl_list_for_each(p, &loop->timers, link)
     {
@@ -250,7 +251,7 @@ eventloop_add_timer(struct eventloop *loop, struct eventtimer *timer)
 void
 eventloop_add_source(struct eventloop *loop, struct eventsource *source)
 {
-    struct eventprepare *p;
+    struct eventsource *p;
 
     wl_list_for_each(p, &loop->sources, link)
     {
@@ -393,6 +394,7 @@ eventsource_init(
     source->callback = callback;
     source->udata = udata;
     source->priority = priority;
+    source->pfd_idx = -1;
 
     wl_list_init(&source->link);
 }
@@ -408,6 +410,8 @@ eventprepare_init(
     prepare->callback = callback;
     prepare->udata = udata;
     prepare->priority = priority;
+
+    wl_list_init(&prepare->link);
 }
 
 void

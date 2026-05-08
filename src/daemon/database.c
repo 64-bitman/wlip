@@ -311,7 +311,7 @@ database_prepare_statements(struct database *db)
         ) != SQLITE_OK)
         goto fail;
 
-    statement = "SELECT COUNT(1) FROM Entries WHERE Id < ?;";
+    statement = "SELECT COUNT(1) FROM Entries WHERE Id > ?;";
     if (sqlite3_prepare_v2(
             db->handle, statement, -1, &db->stmt.get_index, NULL
         ) != SQLITE_OK)
