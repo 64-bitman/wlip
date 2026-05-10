@@ -119,43 +119,6 @@ clipboard_list_new(IPCHandle *ipc_handle)
     return list;
 }
 
-/*
- * Send a request to the daemon to set the selection to the given entry at
- * position "pos".
- */
-void
-clipboard_list_copy(ClipboardList *self, uint pos)
-{
-    g_assert(CLIPBOARD_IS_LIST(self));
-    g_assert(pos < self->size);
-
-    ClipboardEntry **arr = (ClipboardEntry **)self->cache->pdata;
-
-    if (pos >= self->cache->len)
-    {
-        log_warn("Position %u is larger than cache size?", pos);
-        return;
-    }
-
-    ClipboardEntry *entry = arr[pos];
-
-    if (entry == NULL)
-    {
-        log_warn("Position %u is NULL?", pos);
-        return;
-    }
-
-    int64_t id;
-
-    if (clipboard_entry_get_id(entry, &id) == FAIL)
-        // Entry not loaded, just become a no op
-        return;
-
-    ipc_handle_request_async(
-        self->ipc_handle, IPC_REQUEST_TYPE_SET, NULL, NULL, NULL, id
-    );
-}
-
 static void
 history_size_callback(
     IPCHandle *ipc_handle, GAsyncResult *result, ClipboardList *list
@@ -218,31 +181,26 @@ ipc_change_event_callback(
 
     if (strcmp(change, "new") == 0)
     {
-        int64_t i = list->size - index;
+        list->size++;
 
-        if (i >= 0)
-        {
-            if (i <= list->cache->len)
-            {
-                g_ptr_array_insert(list->cache, i, NULL);
-                g_list_model_items_changed(G_LIST_MODEL(list), i, 0, 1);
-            }
-            list->size++;
-        }
+        if (index < list->cache->len)
+            g_ptr_array_insert(list->cache, index, NULL);
+        g_list_model_items_changed(G_LIST_MODEL(list), index, 0, 1);
     }
     else if (strcmp(change, "delete") == 0)
     {
-        int64_t i = --list->size - index;
+        list->size--;
 
-        if (i >= 0 && i < list->cache->len)
-            g_ptr_array_remove_index(list->cache, i);
-        g_list_model_items_changed(G_LIST_MODEL(list), i, 1, 0);
+        if (index < list->cache->len)
+            g_ptr_array_remove_index(list->cache, index);
+        g_list_model_items_changed(G_LIST_MODEL(list), index, 1, 0);
     }
-    else if (strcmp(change, "update") == 0)
+    else if (strcmp(change, "update") == 0 && index < list->size)
     {
-        // Refresh entry, if it is loaded.
         if (index < list->cache->len)
         {
+            // Must force refresh the entry, because the "items-changed"
+            // callback will result in nothing.
             ClipboardEntry *entry = list->cache->pdata[index];
 
             if (entry != NULL)
@@ -265,6 +223,10 @@ clipboard_list_model_get_n_items(GListModel *self)
     return CLIPBOARD_LIST(self)->size;
 }
 
+/*
+ * Store the entry at position "pos". Returns OK if entry exists (can be NULL),
+ * or FAIL if it odesn't exist.
+ */
 static int
 clipboard_list_get_entry(ClipboardList *list, uint pos, ClipboardEntry **entry)
 {

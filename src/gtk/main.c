@@ -13,7 +13,6 @@ static void setup_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpoi
 static void bind_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
 static void unbind_cb(GtkSignalListItemFactory *self, GtkListItem *listitem, gpointer udata UNUSED);
 
-static void list_view_activate(GtkListView *view, uint pos, ClipboardList *list);
 static void list_changed(GListModel *model, uint pos, uint removed, uint add, GtkListView *view);
 // clang-format on
 
@@ -112,30 +111,25 @@ main(int argc, char **argv)
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_add_css_class(main_box, "container");
 
-    GtkWidget *view = gtk_list_view_new(
-        GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(list))),
-        factory
-    );
+    GtkSelectionModel *sel =
+        GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(list)));
+    GtkWidget *view = gtk_list_view_new(sel, factory);
+
     gtk_widget_add_css_class(view, "list");
-    g_signal_connect_object(
-        view,
-        "activate",
-        G_CALLBACK(list_view_activate),
-        list,
-        G_CONNECT_DEFAULT
-    );
+    gtk_list_view_set_single_click_activate(GTK_LIST_VIEW(view), TRUE);
 
     g_signal_connect_object(
         list, "items-changed", G_CALLBACK(list_changed), view, G_CONNECT_AFTER
     );
 
     GtkWidget *scr = gtk_scrolled_window_new();
-    gtk_widget_add_css_class(scr, "scroll_win");
+    gtk_widget_add_css_class(scr, "scroll-win");
 
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scr), view);
     gtk_scrolled_window_set_policy(
         GTK_SCROLLED_WINDOW(scr), GTK_POLICY_NEVER, GTK_POLICY_ALWAYS
     );
+    gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scr), FALSE);
     gtk_box_append(GTK_BOX(main_box), scr);
     gtk_widget_set_vexpand(scr, TRUE);
 
@@ -164,6 +158,7 @@ setup_cb(
     GtkWidget *ebox = entry_box_new();
 
     gtk_list_item_set_child(item, ebox);
+    gtk_list_item_set_activatable(item, FALSE);
 }
 
 static void
@@ -190,12 +185,6 @@ unbind_cb(
     GtkWidget *ebox = gtk_list_item_get_child(item);
 
     entry_box_set(ENTRY_BOX(ebox), NULL, NULL, 0);
-}
-
-static void
-list_view_activate(GtkListView *view UNUSED, uint pos, ClipboardList *list)
-{
-    clipboard_list_copy(list, pos);
 }
 
 static void

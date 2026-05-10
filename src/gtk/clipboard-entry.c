@@ -1,4 +1,5 @@
 #include "clipboard-entry.h"
+#include "entry-box.h"
 #include "ipc-handle.h"
 #include "ipc_client.h"
 #include "log.h"
@@ -16,6 +17,7 @@ struct _ClipboardEntry
     int64_t creation_time;
     int64_t update_time;
     bool    starred;
+    bool    current; // If clipboard is set to this entry.
 
     // Map of mime type (string) to GBytes containg the data. Note that value
     // may be NULL, if mime type data is not loaded.
@@ -28,6 +30,8 @@ struct _ClipboardEntry
     // response.
     bool       loaded;
     IPCHandle *ipc_handle;
+
+    EntryBox *ebox;
 };
 
 G_DEFINE_TYPE(ClipboardEntry, clipboard_entry, G_TYPE_OBJECT)
@@ -35,6 +39,7 @@ G_DEFINE_TYPE(ClipboardEntry, clipboard_entry, G_TYPE_OBJECT)
 typedef enum
 {
     SIGNAL_REFRESH,
+    SIGNAL_SELECTED,
     N_SIGNALS
 } ClipboardEntrySignal;
 
@@ -67,6 +72,18 @@ clipboard_entry_class_init(ClipboardEntryClass *class)
         NULL,
         G_TYPE_NONE,
         0
+    );
+    obj_signals[SIGNAL_SELECTED] = g_signal_new(
+        "selected",
+        G_TYPE_FROM_CLASS(class),
+        G_SIGNAL_NO_HOOKS | G_SIGNAL_NO_RECURSE,
+        0,
+        NULL,
+        NULL,
+        NULL,
+        G_TYPE_NONE,
+        1,
+        G_TYPE_BOOLEAN
     );
 }
 
@@ -118,6 +135,8 @@ entry_callback(
     if (get_json_integer(resp, "update_time", &entry->update_time) == FAIL)
         return;
     if (get_json_boolean(resp, "starred", &entry->starred) == FAIL)
+        return;
+    if (get_json_boolean(resp, "current", &entry->current) == FAIL)
         return;
 
     struct json_object *arr;
@@ -189,7 +208,7 @@ clipboard_entry_refresh(ClipboardEntry *self, uint index, GCancellable *cancel)
             cancel,
             (GAsyncReadyCallback)entry_callback,
             g_object_ref(self),
-            -1,
+            (int64_t)-1,
             self->id
         );
     else
@@ -390,4 +409,25 @@ clipboard_entry_get_id(ClipboardEntry *self, int64_t *id)
     else
         return FAIL;
     return OK;
+}
+
+bool
+clipboard_entry_current(ClipboardEntry *self)
+{
+    g_assert(CLIPBOARD_IS_ENTRY(self));
+
+    return self->current;
+}
+
+/*
+ * Copy this entry to the clipboard, if it is loaded, otherwise do nothing.
+ */
+void
+clipboard_entry_copy(ClipboardEntry *self)
+{
+    if (!self->loaded)
+        return;
+    ipc_handle_request_async(
+        self->ipc_handle, IPC_REQUEST_TYPE_SET, NULL, NULL, NULL, self->id
+    );
 }

@@ -1,45 +1,53 @@
-@define-color theme_bg_color #161616ff;
-@define-color theme_entry_bg_color rgb(40, 40, 40);
-@define-color theme_fg_color rgb(255, 255, 255);
-@define-color theme_selected rgb(60, 60, 60);
+@define-color theme_bg_color #36363a;
+@define-color theme_entry_bg_color #47474c;
+@define-color theme_fg_color #ffffff;
 
 .window {
     background-color: @theme_bg_color;
-    border-radius: 10px;
-    padding: 12px;
-    border: 3px solid @theme_selected;
+    color: @theme_fg_color;
+    border-radius: 20px;
+    /* border: 3px solid @theme_selected; */
 }
 
 .container {
+    padding: 15px 0px;
+    border-radius: 20px;
 }
 
-.list {
-    border-radius: 10px;
+.list, .header {
     background-color: @theme_bg_color;
-    outline-color: white;
+    color: @theme_fg_color;
 }
 
-.list row:selected {
-    border-radius: 10px;
-    background-color: @theme_selected;
+.list row {
+    background-color: transparent;
 }
 
 .entry {
     background-color: @theme_entry_bg_color;
-    color: @theme_fg_color;
-    border-radius: 10px;
+    padding: 20px;
+    margin: 0px;
+    border-radius: 20px;
+}
 
-    margin: 5px;
+.entry-current {
+    background-color: #3A5D9C50;
+}
+
+.list row {
+    border-radius: 20px;
+    padding: 0px;
+    margin: 10px 10px 10px 20px;
+}
+
+.list row:selected {
+    outline: 3px solid white;
 }
 
 .entry-header {
-    padding: 10px;
+    margin-bottom: 10px;
 }
 
-.content {
-    padding: 10px;
-    margin: 10px;
+popover contents, popover arrow {
     background-color: @theme_bg_color;
-    color: @theme_fg_color;
-    border-radius: 10px;
 }

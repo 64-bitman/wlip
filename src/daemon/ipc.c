@@ -562,6 +562,9 @@ construct_entry_response(
     add_json_integer(req->resp, "creation_time", entry->creation_time, true);
     add_json_integer(req->resp, "update_time", entry->update_time, true);
     add_json_boolean(req->resp, "starred", entry->starred, true);
+    add_json_boolean(
+        req->resp, "current", db->wlip->wayland.entry_id == entry->id, true
+    );
 
     return OK;
 }

@@ -281,8 +281,9 @@ ipc_handle_request_async(
         int64_t index = va_arg(ap, int64_t);
 
         if (index < 0)
-            index = va_arg(ap, int64_t);
-        add_json_integer(req, "index", index, true);
+            add_json_integer(req, "id", va_arg(ap, int64_t), true);
+        else
+            add_json_integer(req, "index", index, true);
         break;
     case IPC_REQUEST_TYPE_MIMETYPE:
         add_json_string(req, "type", "mimetype", true);

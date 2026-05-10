@@ -8,6 +8,7 @@
 #include <glycin-gtk4-2/glycin-gtk4.h>
 #include <gtk-4.0/gtk/gtk.h>
 
+// Why don't I use a .ui file? No idea, just don't feel like it...
 struct _EntryBox
 {
     GtkWidget parent;
@@ -16,14 +17,17 @@ struct _EntryBox
 
     GtkWidget *header_box;
     // These are in header_box, aligned horizontally in columns
-    GtkWidget *position_number;
+    GtkWidget *menu_button;
+    GtkWidget *copy_button;
+    GtkWidget *pin_button;
+    GtkWidget *delete_button;
     GtkWidget *timestamp_label;
     uint       timer_id;
 
     // Used to cancel IPC operation
     GCancellable   *cancel;
     ClipboardEntry *entry;
-    uint            handler_id;
+    uint            refresh_id;
 
     // Used to cancel image loading operation
     GCancellable *image_cancel;
@@ -62,26 +66,67 @@ entry_box_class_init(EntryBoxClass *class)
 }
 
 static void
+copy_button_callback(GtkWidget *button UNUSED, EntryBox *ebox)
+{
+    if (ebox->entry != NULL)
+        clipboard_entry_copy(ebox->entry);
+}
+
+static void
 entry_box_init(EntryBox *self)
 {
+    gtk_widget_add_css_class(GTK_WIDGET(self), "entry");
+
     self->root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_set_parent(self->root_box, GTK_WIDGET(self));
-    gtk_widget_add_css_class(self->root_box, "entry");
+    gtk_widget_add_css_class(self->root_box, "entry-box");
 
     self->header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_set_homogeneous(GTK_BOX(self->header_box), TRUE);
     gtk_box_append(GTK_BOX(self->root_box), self->header_box);
     gtk_widget_add_css_class(self->header_box, "entry-header");
 
-    self->position_number = gtk_label_new(NULL);
-    gtk_box_append(GTK_BOX(self->header_box), self->position_number);
-    gtk_widget_set_halign(self->position_number, GTK_ALIGN_START);
-    gtk_widget_add_css_class(self->position_number, "entry-position");
+    GMenu *menu = g_menu_new();
+
+    self->menu_button = gtk_menu_button_new();
+    gtk_widget_add_css_class(self->menu_button, "entry-menu");
+    gtk_menu_button_set_icon_name(
+        GTK_MENU_BUTTON(self->menu_button), "view-more-symbolic"
+    );
+    gtk_menu_button_set_menu_model(
+        GTK_MENU_BUTTON(self->menu_button), G_MENU_MODEL(menu)
+    );
+    gtk_box_append(GTK_BOX(self->header_box), self->menu_button);
+    gtk_widget_set_halign(self->menu_button, GTK_ALIGN_START);
+
+    self->copy_button = gtk_button_new_from_icon_name("edit-copy-symbolic");
+    g_signal_connect_object(
+        self->copy_button,
+        "clicked",
+        G_CALLBACK(copy_button_callback),
+        self,
+        G_CONNECT_DEFAULT
+    );
+    gtk_widget_set_halign(self->copy_button, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(self->header_box), self->copy_button);
+
+    self->pin_button = gtk_toggle_button_new();
+    gtk_button_set_icon_name(GTK_BUTTON(self->pin_button), "view-pin-symbolic");
+    gtk_widget_set_halign(self->pin_button, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(self->header_box), self->pin_button);
+
+    self->delete_button = gtk_button_new_from_icon_name("user-trash-symbolic");
+    gtk_widget_set_halign(self->delete_button, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(self->header_box), self->delete_button);
+
+    // Add spacer
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(self->header_box), spacer);
 
     self->timestamp_label = gtk_label_new(NULL);
-    gtk_box_append(GTK_BOX(self->header_box), self->timestamp_label);
     gtk_widget_set_halign(self->timestamp_label, GTK_ALIGN_END);
     gtk_widget_add_css_class(self->timestamp_label, "entry-timestamp");
+    gtk_box_append(GTK_BOX(self->header_box), self->timestamp_label);
 
     self->content = NULL;
 }
@@ -109,7 +154,6 @@ entry_box_set_content(EntryBox *self, GtkWidget *content, bool focus)
 
     if (self->item != NULL)
     {
-        gtk_list_item_set_activatable(self->item, focus);
         gtk_list_item_set_focusable(self->item, focus);
         gtk_list_item_set_selectable(self->item, focus);
     }
@@ -399,6 +443,15 @@ entry_refresh_callback(ClipboardEntry *entry, EntryBox *ebox)
     g_assert(ebox->entry == entry);
 
     entry_box_update_content(ebox);
+    if (clipboard_entry_current(entry))
+    {
+        gtk_widget_add_css_class(GTK_WIDGET(ebox), "entry-current");
+    }
+    else
+    {
+        gtk_widget_add_css_class(GTK_WIDGET(ebox), "entry");
+        gtk_widget_remove_css_class(GTK_WIDGET(ebox), "entry-current");
+    }
 }
 
 /*
@@ -425,7 +478,7 @@ entry_box_set(
     }
     if (self->entry != NULL)
     {
-        g_signal_handler_disconnect(self->entry, self->handler_id);
+        g_signal_handler_disconnect(self->entry, self->refresh_id);
         g_object_unref(self->entry);
     }
     if (self->item != NULL)
@@ -443,20 +496,16 @@ entry_box_set(
         entry_box_set_content(self, NULL, false);
         return;
     }
-    self->handler_id = g_signal_connect_object(
+    self->refresh_id = g_signal_connect_object(
         entry,
         "refresh",
         G_CALLBACK(entry_refresh_callback),
         self,
         G_CONNECT_DEFAULT
     );
+
     self->entry = g_object_ref(entry);
     self->item = g_object_ref(item);
-
-    static char buf[65];
-
-    sprintf(buf, "%u", pos);
-    gtk_label_set_text(GTK_LABEL(self->position_number), buf);
 
     if (!clipboard_entry_is_loaded(self->entry))
     {

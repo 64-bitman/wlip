@@ -232,7 +232,16 @@ exit:
     if (did_something)
     {
         ipc_emit_event(&wlip->ipc, IPC_EVENT_SELECTION, id);
-        ipc_emit_event(&wlip->ipc, IPC_EVENT_CHANGE, id, 0, "new");
+
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)0, "new");
+        if (wlip->wayland.entry_id != -1)
+            ipc_emit_event(
+                &wlip->ipc,
+                IPC_EVENT_CHANGE,
+                wlip->wayland.entry_id,
+                (int64_t)-1,
+                "update"
+            );
     }
 
     return did_something ? id : -1;
