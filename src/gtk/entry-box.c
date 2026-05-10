@@ -73,6 +73,13 @@ copy_button_callback(GtkWidget *button UNUSED, EntryBox *ebox)
 }
 
 static void
+delete_button_callback(GtkWidget *button UNUSED, EntryBox *ebox)
+{
+    if (ebox->entry != NULL)
+        clipboard_entry_delete(ebox->entry);
+}
+
+static void
 entry_box_init(EntryBox *self)
 {
     gtk_widget_add_css_class(GTK_WIDGET(self), "entry");
@@ -115,6 +122,13 @@ entry_box_init(EntryBox *self)
     gtk_box_append(GTK_BOX(self->header_box), self->pin_button);
 
     self->delete_button = gtk_button_new_from_icon_name("user-trash-symbolic");
+    g_signal_connect_object(
+        self->delete_button,
+        "clicked",
+        G_CALLBACK(delete_button_callback),
+        self,
+        G_CONNECT_DEFAULT
+    );
     gtk_widget_set_halign(self->delete_button, GTK_ALIGN_START);
     gtk_box_append(GTK_BOX(self->header_box), self->delete_button);
 

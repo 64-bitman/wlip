@@ -29,4 +29,5 @@ int64_t clipboard_entry_get_creation_time(ClipboardEntry *self);
 int clipboard_entry_get_id(ClipboardEntry *self, int64_t *id);
 bool clipboard_entry_current(ClipboardEntry *self);
 void clipboard_entry_copy(ClipboardEntry *self);
+void clipboard_entry_delete(ClipboardEntry *self);
 // clang-format on

@@ -431,3 +431,17 @@ clipboard_entry_copy(ClipboardEntry *self)
         self->ipc_handle, IPC_REQUEST_TYPE_SET, NULL, NULL, NULL, self->id
     );
 }
+
+/*
+ * Send request to daemon to delete this entry. Let event handler actually
+ * remove the entry from the list.
+ */
+void
+clipboard_entry_delete(ClipboardEntry *self)
+{
+    if (!self->loaded)
+        return;
+    ipc_handle_request_async(
+        self->ipc_handle, IPC_REQUEST_TYPE_DELETE, NULL, NULL, NULL, self->id
+    );
+}
