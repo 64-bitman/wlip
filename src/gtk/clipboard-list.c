@@ -199,8 +199,8 @@ ipc_change_event_callback(
     {
         if (index < list->cache->len)
         {
-            // Must force refresh the entry, because the "items-changed"
-            // callback will result in nothing.
+            // Must force refresh the entry, because emitting "items-changed"
+            // callback will result in nothing if entry is already loaded.
             ClipboardEntry *entry = list->cache->pdata[index];
 
             if (entry != NULL)

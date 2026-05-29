@@ -41,6 +41,7 @@ static void ipc_request_handle_set(struct ipc_request *req);
 static void ipc_request_handle_delete(struct ipc_request *req);
 static void ipc_request_handle_subscribe(struct ipc_request *req);
 static void ipc_request_handle_history_size(struct ipc_request *req);
+static void ipc_request_handle_set_starred(struct ipc_request *req);
 // clang-format on
 
 #define REQUEST_HANDLER(name) {STRINGIFY(name), ipc_request_handle_##name}
@@ -54,7 +55,8 @@ static struct
     REQUEST_HANDLER(set),
     REQUEST_HANDLER(delete),
     REQUEST_HANDLER(subscribe),
-    REQUEST_HANDLER(history_size)
+    REQUEST_HANDLER(history_size),
+    REQUEST_HANDLER(set_starred)
 };
 
 static const char *EVENTS[] = {
@@ -775,4 +777,30 @@ ipc_request_handle_history_size(struct ipc_request *req)
 
     add_json_integer(req->resp, "size", n, true);
     ipc_request_respond(req);
+}
+
+static void
+ipc_request_handle_set_starred(struct ipc_request *req)
+{
+    struct database *db = &req->ct->ipc->wlip->database;
+    int64_t          id;
+    bool             starred;
+
+    if (get_json_integer(req->req, "id", &id) == FAIL ||
+        get_json_boolean(req->req, "starred", &starred) == FAIL)
+    {
+        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
+        return;
+    }
+
+    struct database_entry entry = {
+        .flags = DATABASE_ENTRY_STARRED,
+        .id = id,
+        .starred = starred,
+    };
+
+    if (database_serialize_entry(db, &entry, false) == -1)
+        ipc_request_respond_error(req, ERRMSG_DB);
+    else
+        ipc_request_respond_success(req);
 }

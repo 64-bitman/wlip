@@ -332,6 +332,8 @@ entry_box_set_content_data(EntryBox *self, GBytes *bytes)
         GtkWidget *insc = gtk_inscription_new(tmp);
         g_free(tmp);
 
+        // TODO use GtkLabel and have max height? I don't know how to do that
+        // though...
         gtk_inscription_set_nat_lines(GTK_INSCRIPTION(insc), 5);
         gtk_inscription_set_min_lines(GTK_INSCRIPTION(insc), 5);
         gtk_inscription_set_text_overflow(
