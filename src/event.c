@@ -240,6 +240,9 @@ eventloop_add_timer(struct eventloop *loop, struct eventtimer *timer)
 {
     struct eventtimer *p;
 
+    if (!wl_list_empty(&timer->link))
+        return;
+
     wl_list_for_each(p, &loop->timers, link)
     {
         if (p->priority > timer->priority)
@@ -265,6 +268,9 @@ void
 eventloop_add_prepare(struct eventloop *loop, struct eventprepare *prepare)
 {
     struct eventprepare *p;
+
+    if (!wl_list_empty(&prepare->link))
+        return;
 
     wl_list_for_each(p, &loop->prepares, link)
     {
