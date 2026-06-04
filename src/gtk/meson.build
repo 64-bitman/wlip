@@ -8,6 +8,7 @@ gui_sources += files(
   'clipboard-entry.c',
   'clipboard-list.c',
   'entry-box.c',
-  'ipc-handle.c'
+  'ipc-handle.c',
+  'entry-content.c'
 )
 gui_includes += include_directories('.')

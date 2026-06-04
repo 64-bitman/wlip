@@ -6,7 +6,7 @@
 #include <gtk-4.0/gtk/gtk.h>
 
 #define ENTRY_TYPE_BOX (entry_box_get_type())
-G_DECLARE_FINAL_TYPE(EntryBox, entry_box, ENTRY, BOX, GtkWidget)
+G_DECLARE_FINAL_TYPE(EntryBox, entry_box, ENTRY, BOX, GtkBox)
 
 // clang-format off
 GtkWidget *entry_box_new(void);

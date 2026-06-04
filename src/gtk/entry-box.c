@@ -1,5 +1,6 @@
 #include "entry-box.h"
 #include "clipboard-entry.h"
+#include "entry-content.h"
 #include "log.h"
 #include "util.h"
 #include <glib-object.h>
@@ -8,12 +9,12 @@
 #include <glycin-gtk4-2/glycin-gtk4.h>
 #include <gtk-4.0/gtk/gtk.h>
 
-// Why don't I use a .ui file? No idea, just don't feel like it...
+/*
+ * Main widget for displaying a clipboard entry to the user
+ */
 struct _EntryBox
 {
-    GtkWidget parent;
-
-    GtkWidget *root_box;
+    GtkBox parent;
 
     GtkWidget *header_box;
     // These are in header_box, aligned horizontally in columns
@@ -37,7 +38,7 @@ struct _EntryBox
     GtkWidget *content; // Can be GtkLabel or GtkPicture
 };
 
-G_DEFINE_FINAL_TYPE(EntryBox, entry_box, GTK_TYPE_WIDGET)
+G_DEFINE_FINAL_TYPE(EntryBox, entry_box, GTK_TYPE_BOX)
 
 static void
 entry_box_dispose(GObject *object)
@@ -49,7 +50,6 @@ entry_box_dispose(GObject *object)
 
     g_clear_object(&ebox->entry);
     g_clear_object(&ebox->item);
-    g_clear_pointer(&ebox->root_box, gtk_widget_unparent);
 
     G_OBJECT_CLASS(entry_box_parent_class)->dispose(object);
 }
@@ -57,12 +57,9 @@ entry_box_dispose(GObject *object)
 static void
 entry_box_class_init(EntryBoxClass *class)
 {
-    GObjectClass   *gobject_class = G_OBJECT_CLASS(class);
-    GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(class);
+    GObjectClass *gobject_class = G_OBJECT_CLASS(class);
 
     gobject_class->dispose = entry_box_dispose;
-
-    gtk_widget_class_set_layout_manager_type(widget_class, GTK_TYPE_BIN_LAYOUT);
 }
 
 static void
@@ -84,12 +81,12 @@ entry_box_init(EntryBox *self)
 {
     gtk_widget_add_css_class(GTK_WIDGET(self), "entry");
 
-    self->root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_widget_set_parent(self->root_box, GTK_WIDGET(self));
-    gtk_widget_add_css_class(self->root_box, "entry-box");
+    gtk_orientable_set_orientation(
+        GTK_ORIENTABLE(self), GTK_ORIENTATION_VERTICAL
+    );
 
     self->header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_append(GTK_BOX(self->root_box), self->header_box);
+    gtk_box_append(GTK_BOX(self), self->header_box);
     gtk_widget_add_css_class(self->header_box, "entry-header");
 
     GMenu *menu = g_menu_new();
@@ -142,7 +139,10 @@ entry_box_init(EntryBox *self)
     gtk_widget_add_css_class(self->timestamp_label, "entry-timestamp");
     gtk_box_append(GTK_BOX(self->header_box), self->timestamp_label);
 
-    self->content = NULL;
+    self->content = entry_content_new();
+    gtk_widget_set_hexpand(self->content, TRUE);
+    gtk_widget_add_css_class(self->content, "content");
+    gtk_box_append(GTK_BOX(self), self->content);
 }
 
 GtkWidget *
@@ -157,26 +157,12 @@ entry_box_set_content(EntryBox *self, GtkWidget *content, bool focus)
     g_assert(ENTRY_IS_BOX(self));
     g_assert(content == NULL || GTK_IS_WIDGET(content));
 
-    if (self->content != NULL)
-        gtk_box_remove(GTK_BOX(self->root_box), self->content);
-    self->content = content;
-    if (content != NULL)
-    {
-        gtk_box_append(GTK_BOX(self->root_box), self->content);
-        gtk_widget_add_css_class(self->content, "content");
-    }
-
+    entry_content_set_child(ENTRY_CONTENT(self->content), content);
     if (self->item != NULL)
     {
         gtk_list_item_set_focusable(self->item, focus);
         gtk_list_item_set_selectable(self->item, focus);
     }
-
-    // Allow bigger entry for images
-    if (GTK_IS_PICTURE(content))
-        gtk_widget_set_size_request(self->root_box, -1, 400);
-    else
-        gtk_widget_set_size_request(self->root_box, -1, 100);
 }
 
 static void
@@ -240,6 +226,7 @@ load_image_callback(GlyLoader *loader, GAsyncResult *result, EntryBox *ebox)
     );
 }
 
+// TODO: only update when widget is visible is visible
 static void
 entry_box_update_timestamp(EntryBox *ebox)
 {
@@ -329,19 +316,17 @@ entry_box_set_content_data(EntryBox *self, GBytes *bytes)
     case CONTENT_TYPE_TEXT:
     {
         char      *tmp = g_strndup((char *)data, len);
-        GtkWidget *insc = gtk_inscription_new(tmp);
+        GtkWidget *label = gtk_label_new(tmp);
         g_free(tmp);
 
-        // TODO use GtkLabel and have max height? I don't know how to do that
-        // though...
-        gtk_inscription_set_nat_lines(GTK_INSCRIPTION(insc), 5);
-        gtk_inscription_set_min_lines(GTK_INSCRIPTION(insc), 5);
-        gtk_inscription_set_text_overflow(
-            GTK_INSCRIPTION(insc), GTK_INSCRIPTION_OVERFLOW_ELLIPSIZE_END
-        );
-        gtk_inscription_set_yalign(GTK_INSCRIPTION(insc), 0);
+        gtk_label_set_lines(GTK_LABEL(label), 10);
+        gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+        gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_halign(GTK_WIDGET(label), GTK_ALIGN_FILL);
+        gtk_widget_set_hexpand(GTK_WIDGET(label), TRUE);
 
-        entry_box_set_content(self, insc, true);
+        entry_box_set_content(self, label, true);
         return OK;
     }
     case CONTENT_TYPE_IMAGE:
@@ -409,7 +394,7 @@ exit:
 }
 
 /*
- * Update the content of the entr ybox, if the content data is available,
+ * Update the content of the entry box, if the content data is available,
  * otherwise fetch it.
  */
 static void
