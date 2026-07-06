@@ -357,7 +357,7 @@ add_json_arr_string(struct json_object *arr, const char *val)
 
 /*
  * Process the buffer containing JSON messages delimited by newlines. For each
- * message, call "callbak". Returns OK on success and FAIL on failure.
+ * message, call "callback". Returns OK on success and FAIL on failure.
  */
 int
 process_json_buffer(
