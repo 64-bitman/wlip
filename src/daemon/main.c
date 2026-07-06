@@ -22,6 +22,7 @@ main(int argc, char **argv)
     static const struct option options[] = {
         {"config", required_argument, 0, 'c'},
         {"data", required_argument, 0, 'd'},
+        {"verbose", no_argument, 0, 'V'},
         {NULL, 0, 0, 0}
     };
 
@@ -33,7 +34,7 @@ main(int argc, char **argv)
 
     log_init(NULL);
 
-    while ((c = getopt_long(argc, argv, "", options, &idx)) != -1)
+    while ((c = getopt_long(argc, argv, "c:d:V", options, &idx)) != -1)
     {
         switch (c)
         {
@@ -45,7 +46,7 @@ main(int argc, char **argv)
             free(database_dir);
             database_dir = strdup(optarg);
             break;
-        case 'v':
+        case 'V':
             log_set_level(LOG_DEBUG);
             break;
         default:
