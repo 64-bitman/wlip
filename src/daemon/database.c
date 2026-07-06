@@ -6,7 +6,6 @@
 #include "sha256.h"
 #include "util.h"
 #include "wlip.h"
-#include <assert.h>
 #include <errno.h>
 #include <sqlite3.h>
 #include <stdbool.h>

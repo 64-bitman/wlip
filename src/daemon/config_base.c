@@ -2,7 +2,6 @@
 #include "log.h"
 #include "tomlc17.h"
 #include "util.h"
-#include <assert.h>
 #include <stdarg.h>
 #include <string.h> // IWYU pragma: keep
 #include <unistd.h>

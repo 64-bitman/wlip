@@ -24,5 +24,5 @@ foreach protocol : protocols
     command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@']
   )
 
-  daemon_sources += [client_header, code]
+  sources += [client_header, code]
 endforeach
