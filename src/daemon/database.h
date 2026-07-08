@@ -19,12 +19,6 @@ enum database_transaction
 
 struct database_entry
 {
-    enum
-    {
-        DATABASE_ENTRY_STARRED = 1 << 0,
-        DATABASE_ENTRY_UPDATE = 1 << 1
-    } flags;
-
     int64_t id;
     int64_t creation_time; // In milliseconds
     int64_t update_time;   // In milliseconds
@@ -73,7 +67,7 @@ struct database
 int database_init(struct database *db, const char *dir, struct wlip *wlip);
 void database_uninit(struct database *db);
 int database_do_transaction(struct database *db, enum database_transaction type);
-int64_t database_serialize_entry(struct database *db, struct database_entry *entry, bool selection);
+int64_t database_serialize_entry(struct database *db, struct database_entry *entry);
 int database_serialize_mime_type(struct database *db, int64_t id, const char *mime_type, const uint8_t *data_id, uint8_t *data, size_t len);
 int database_offer_mime_types(struct database *db, int64_t id, struct ext_data_control_source_v1 *source);
 sqlite3_stmt *database_deserialize_mime_type_data(struct database *db, int64_t id, const char *mime_type);

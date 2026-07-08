@@ -103,7 +103,7 @@ wlip_new_selection(
         return -1;
 
     SHA256_CTX sha_hash;
-    int64_t    id = database_serialize_entry(&wlip->database, NULL, true);
+    int64_t    id = database_serialize_entry(&wlip->database, NULL);
 
     if (id == -1)
         goto exit;
@@ -231,18 +231,11 @@ exit:
 
     if (did_something)
     {
-        ipc_emit_event(&wlip->ipc, IPC_EVENT_SELECTION, id);
-
-        ipc_emit_event(&wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)0, "new");
-        if (wlip->wayland.entry_id != -1)
-            ipc_emit_event(
-                &wlip->ipc,
-                IPC_EVENT_CHANGE,
-                wlip->wayland.entry_id,
-                (int64_t)-1,
-                "update"
-            );
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_NEW, id, (int64_t)0);
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_CURRENT, id, (int64_t)0);
     }
+    else
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_CLEARED);
 
     return did_something ? id : -1;
 }

@@ -143,21 +143,12 @@ wayland_set_selection(struct wayland *wayland, int64_t id)
 {
     struct wayland_seat *seat;
 
-    // Make sure state of old entry is emitted (if it exists)
-    if (wayland->entry_id != -1)
-        ipc_emit_event(
-            &wayland->wlip->ipc,
-            IPC_EVENT_CHANGE,
-            wayland->entry_id,
-            (int64_t)-1,
-            "update"
-        );
-
     wayland->entry_id = id;
     database_save_int_setting(&wayland->wlip->database, "Last_entry", id);
-    ipc_emit_event(
-        &wayland->wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)-1, "update"
-    );
+    if (id == -1)
+        ipc_emit_event(&wayland->wlip->ipc, IPC_EVENT_CLEARED);
+    else
+        ipc_emit_event(&wayland->wlip->ipc, IPC_EVENT_CURRENT, id, (int64_t)-1);
 
     wl_list_for_each(seat, &wayland->seats, link)
     {

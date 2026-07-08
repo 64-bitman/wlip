@@ -4,6 +4,7 @@
 #include "log.h"
 #include "util.h"
 #include "wlip.h"
+#include <assert.h>
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
@@ -59,9 +60,13 @@ static struct
     REQUEST_HANDLER(set_starred)
 };
 
-static const char *EVENTS[] = {
-    "selection",
-    "change",
+static const char *EVENTS[N_IPC_EVENTS] = {
+    [__builtin_ctz(IPC_EVENT_NEW)] = "new",
+    [__builtin_ctz(IPC_EVENT_CURRENT)] = "current",
+    [__builtin_ctz(IPC_EVENT_CLEARED)] = "cleared",
+    [__builtin_ctz(IPC_EVENT_DELETE)] = "deleted",
+    [__builtin_ctz(IPC_EVENT_STARRED)] = "starred",
+    [__builtin_ctz(IPC_EVENT_UPDATED)] = "updated",
 };
 
 /*
@@ -240,16 +245,28 @@ ipc_check(int revents, void *udata)
 
 /*
  * Emit an event to all subscribers. Takes ownership of "args". Variadic
- * arguments depend on the even type:
+ * arguments depend on the type:
  *
- * "selection": int64_t id
- * "change": int64_t id, int64_t idx, const char *change -- If idx is -1, then
- *                                                          it is automatically
- *                                                          calculated.
+ * Common arguments:
+ * "int64_t id, int64_t idx": if "idx" is -1, then it is automatically
+ * calculated. Note that for IPC_EVENT_DELETE, "idx" must be passed.
+ *
+ * IPC_EVENT_NEW: none
+ * IPC_EVENT_CURRENT: none
+ * IPC_EVENT_DELETE: none
+ * IPC_EVENT_STARRED: "bool starred"
+ * IPC_EVENT_UPDATED: "int64_t update_time"
+ *
+ * Other:
+ * IPC_EVENT_CLEARED: no args
  */
 void
 ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
 {
+    if (wl_list_empty(&ipc->connections))
+        // Make sure to free any arguments here!
+        return;
+
     struct json_object *event = json_object_new_object();
 
     if (event == NULL)
@@ -263,18 +280,16 @@ ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
     va_start(ap, type);
     switch (type)
     {
-    case IPC_EVENT_SELECTION:
+    case IPC_EVENT_NEW:
+    case IPC_EVENT_CURRENT:
+    case IPC_EVENT_DELETE:
+    case IPC_EVENT_STARRED:
+    case IPC_EVENT_UPDATED:
     {
         int64_t id = va_arg(ap, int64_t);
-        add_json_integer(event, "id", id, true);
-        break;
-    }
-    case IPC_EVENT_CHANGE:
-    {
-        int64_t     id = va_arg(ap, int64_t);
-        int64_t     idx = va_arg(ap, int64_t);
-        const char *change = va_arg(ap, const char *);
+        int64_t idx = va_arg(ap, int64_t);
 
+        assert(type != IPC_EVENT_DELETE || idx != -1);
         if (idx == -1)
             idx = database_get_index(&ipc->wlip->database, id);
 
@@ -287,16 +302,22 @@ ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
 
         add_json_integer(event, "id", id, true);
         add_json_integer(event, "index", idx, true);
-        add_json_string(event, "change", change, true);
+        if (type == IPC_EVENT_STARRED)
+            add_json_boolean(event, "starred", va_arg(ap, int), true);
+        else if (type == IPC_EVENT_UPDATED)
+            add_json_integer(event, "update_time", va_arg(ap, int64_t), true);
+
         break;
     }
+    case IPC_EVENT_CLEARED:
+        break;
     default:
         log_abort("Unknown event type %d", type);
     }
     va_end(ap);
 
     add_json_string(event, "type", "event", true);
-    add_json_string(event, "event", EVENTS[type >> 1], true);
+    add_json_string(event, "event", EVENTS[__builtin_ctz(type)], true);
 
     struct ipc_connection *ct;
 
@@ -794,13 +815,17 @@ ipc_request_handle_set_starred(struct ipc_request *req)
     }
 
     struct database_entry entry = {
-        .flags = DATABASE_ENTRY_STARRED,
         .id = id,
         .starred = starred,
     };
 
-    if (database_serialize_entry(db, &entry, false) == -1)
+    if (database_serialize_entry(db, &entry) == -1)
+    {
         ipc_request_respond_error(req, ERRMSG_DB);
+    }
     else
+    {
         ipc_request_respond_success(req);
+        ipc_emit_event(req->ct->ipc, IPC_EVENT_STARRED, starred);
+    }
 }

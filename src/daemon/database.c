@@ -435,33 +435,30 @@ database_do_transaction(struct database *db, enum database_transaction type)
 
 /*
  * Serialize an entry into the database and return its ID. If "entry" is NULL,
- * then a new entry is created automatically, and its ID is returned. If
- * "selection" is true, IPC events wont be emitted. Returns -1 on failure.
+ * then a new entry is created automatically, and its ID is returned. If "entry"
+ * is not NULL, a new update time is calculated and stored.
+ *
+ * Note that this does only emits IPC events when entry is updated ("entry" is
+ * not NULL).
+ *
+ * Returns 1 on failure.
  */
 int64_t
-database_serialize_entry(
-    struct database *db, struct database_entry *entry, bool selection
-)
+database_serialize_entry(struct database *db, struct database_entry *entry)
 {
     sqlite3_stmt *stmt;
+    int64_t       t = get_time_ns(CLOCK_REALTIME) / 1000000; // msec
 
     if (entry != NULL)
     {
         stmt = db->stmt.update_entry;
-        if (entry->flags & DATABASE_ENTRY_UPDATE)
-            sqlite3_bind_int64(stmt, 1, entry->update_time);
-        else
-            sqlite3_bind_null(stmt, 1);
-        if (entry->flags & DATABASE_ENTRY_STARRED)
-            sqlite3_bind_int(stmt, 2, entry->starred);
-        else
-            sqlite3_bind_null(stmt, 2);
+        entry->update_time = t;
+        sqlite3_bind_int64(stmt, 1, t);
+        sqlite3_bind_int(stmt, 2, entry->starred);
         sqlite3_bind_int64(stmt, 3, entry->id);
     }
     else
     {
-        int64_t t = get_time_ns(CLOCK_REALTIME) / 1000000; // msec
-
         stmt = db->stmt.serialize_entry;
         sqlite3_bind_int64(stmt, 1, t);
         sqlite3_bind_int64(stmt, 2, t);
@@ -482,20 +479,11 @@ database_serialize_entry(
     }
 
     if (entry == NULL)
-    {
         id = sqlite3_column_int64(stmt, 0);
-        if (!selection)
-            ipc_emit_event(
-                &db->wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)-1, "new"
-            );
-    }
     else
     {
         id = entry->id;
-        if (!selection)
-            ipc_emit_event(
-                &db->wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)-1, "update"
-            );
+        ipc_emit_event(&db->wlip->ipc, IPC_EVENT_UPDATED, entry->update_time);
     }
 
 exit:
@@ -913,10 +901,15 @@ int
 database_delete_entry(struct database *db, int64_t id)
 {
     sqlite3_stmt *stmt = db->stmt.delete_entry;
+    int           ret;
+    int64_t       idx;
+
+    idx = database_get_index(db, id);
+    if (idx == -1)
+        return FAIL;
 
     sqlite3_bind_int64(stmt, 1, id);
-
-    int ret = sqlite3_step(stmt);
+    ret = sqlite3_step(stmt);
 
     sqlite3_reset(stmt);
     if (ret != SQLITE_ROW)
@@ -930,7 +923,7 @@ database_delete_entry(struct database *db, int64_t id)
         return FAIL;
     }
 
-    ipc_emit_event(&db->wlip->ipc, IPC_EVENT_CHANGE, id, (int64_t)-1, "delete");
+    ipc_emit_event(&db->wlip->ipc, IPC_EVENT_DELETE, id, idx);
 
     return OK;
 }

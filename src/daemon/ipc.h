@@ -12,8 +12,14 @@ struct wlip;
 enum ipc_event
 {
     IPC_EVENT_NONE = 0,
-    IPC_EVENT_SELECTION = 1 << 0,
-    IPC_EVENT_CHANGE = 1 << 1
+
+    IPC_EVENT_NEW = 1 << 0,     // New entry
+    IPC_EVENT_CURRENT = 1 << 1, // Current entry has changed
+    IPC_EVENT_CLEARED = 1 << 2, // Clipboard/selection is cleared
+    IPC_EVENT_DELETE = 1 << 3,  // Entry deleted from history
+    IPC_EVENT_STARRED = 1 << 4, // Entry was starred
+    IPC_EVENT_UPDATED = 1 << 5, // Entry has new update time
+    N_IPC_EVENTS = 6
 };
 
 struct ipc_message
