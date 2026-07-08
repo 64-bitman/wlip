@@ -20,14 +20,14 @@ struct _WlipListEntry
 {
     GObject parent;
 
-    gboolean loaded;
-    int64_t  id;
+    int64_t id;
 
     int64_t creation_time;
     int64_t update_time;
 
-    gboolean starred;
-    gboolean current;
+    guint loaded : 1;
+    guint starred : 1;
+    guint current : 1;
 
     // Maps mime type string to GBytes (or NULL if not loaded).
     GHashTable *mime_types;
