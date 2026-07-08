@@ -1,4 +1,5 @@
 #include "wlipdaemon.h"
+#include "wliplist.h"
 #include <glib-unix.h>
 #include <glib.h>
 
@@ -36,29 +37,9 @@ main(int argc G_GNUC_UNUSED, char **argv G_GNUC_UNUSED)
     };
 
     g_autoptr(WlipDaemon) daemon = wlip_daemon_new(NULL, NULL);
-
-    wlip_daemon_request_async(
-        daemon,
-        WLIP_DAEMON_REQUEST_ENTRY,
-        G_PRIORITY_DEFAULT,
-        NULL,
-        NULL,
-        NULL,
-        0
-    );
-    wlip_daemon_request_async(
-        daemon,
-        WLIP_DAEMON_REQUEST_ENTRY,
-        G_PRIORITY_DEFAULT,
-        NULL,
-        NULL,
-        NULL,
-        1
-    );
+    g_autoptr(WlipList) list = wlip_list_new(daemon);
 
     g_main_loop_run(loop);
-
-    wlip_daemon_stop(daemon);
 
     for (guint i = 0; i < G_N_ELEMENTS(signal_handlers); i++)
         g_source_remove(signal_handlers[i]);

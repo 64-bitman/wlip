@@ -1,4 +1,7 @@
-sources = files('wlipdaemon.c')
+sources = files(
+  'wlipdaemon.c',
+  'wliplist.c'
+)
 includes = include_directories('.')
 
 glib_dep = dependency('glib-2.0')

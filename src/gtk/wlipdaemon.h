@@ -8,6 +8,9 @@
 typedef enum
 {
     WLIP_DAEMON_REQUEST_ENTRY,
+    WLIP_DAEMON_REQUEST_SUBSCRIBE,
+    WLIP_DAEMON_REQUEST_HISTORY_SIZE,
+    N_WLIP_DAEMON_REQUESTS
 } WlipDaemonRequest;
 
 #define WLIP_TYPE_DAEMON (wlip_daemon_get_type())

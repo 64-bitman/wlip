@@ -40,7 +40,11 @@ typedef enum
 
 static guint SIGNALS[N_SIGNALS] = {0};
 
-static const char *REQUEST_NAMES[] = {[WLIP_DAEMON_REQUEST_ENTRY] = "entry"};
+static const char *REQUEST_NAMES[N_WLIP_DAEMON_REQUESTS] = {
+    [WLIP_DAEMON_REQUEST_ENTRY] = "entry",
+    [WLIP_DAEMON_REQUEST_SUBSCRIBE] = "subscribe",
+    [WLIP_DAEMON_REQUEST_HISTORY_SIZE] = "history_size"
+};
 
 static void
 wlip_daemon_finalize(GObject *obj)
@@ -165,6 +169,10 @@ wlip_daemon_stop(WlipDaemon *self)
  * WLIP_DAEMON_REQUEST_ENTRY: "int64_t index, int64_t id"
  * If "index" is -1, then "id" is used, otherwise "id" is ignored (and is not
  * required).
+ *
+ * WLIP_DAEMON_REQUEST_SUBSCRIBE: "const char * event, ..., NULL"
+ *
+ * WLIP_DAEMON_REQUEST_HISTORY_SIZE: no args
  */
 void
 wlip_daemon_request_async(
@@ -207,6 +215,28 @@ wlip_daemon_request_async(
             g_string_append_printf(str, ",\"index\":%" G_GINT64_FORMAT, index);
         break;
     }
+    case WLIP_DAEMON_REQUEST_SUBSCRIBE:
+    {
+        gboolean first = TRUE;
+
+        g_string_append_printf(str, ",\"events\":[");
+        while (TRUE)
+        {
+            const char *event = va_arg(ap, const char *);
+
+            if (event == NULL)
+                break;
+            if (!first)
+                g_string_append_c(str, ',');
+
+            g_string_append_printf(str, "\"%s\"", event);
+            first = FALSE;
+        }
+        g_string_append_printf(str, "]");
+        break;
+    }
+    case WLIP_DAEMON_REQUEST_HISTORY_SIZE:
+        break;
     default:
         g_assert_not_reached();
     }
@@ -466,7 +496,7 @@ wlip_daemon_thread_cb(WlipDaemon *self)
 
                 g_main_context_invoke_full(
                     NULL,
-                    G_PRIORITY_HIGH,
+                    G_PRIORITY_LOW,
                     (GSourceFunc)wlip_daemon_received_cb,
                     data,
                     (GDestroyNotify)read_thread_data_free
