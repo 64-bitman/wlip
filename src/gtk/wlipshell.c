@@ -1,6 +1,7 @@
 #include "wlipshell.h"
 #include "wlipdaemon.h"
 #include "wliplist.h"
+#include "wlipview.h"
 #include <gtk/gtk.h>
 #include <gtk4-layer-shell.h>
 
@@ -12,10 +13,11 @@ struct _WlipShell
     WlipList   *list;
     GtkWidget  *win;
 
-    GtkWidget *vbox;    // Vertical box that holds everything
-    GtkWidget *menubar; // Popover menu bar
-    GtkWidget *search;  // Search entry
-    GtkWidget *view;    // Entry list view
+    GtkWidget *vbox;      // Vertical box that holds everything
+    GtkWidget *menubar;   // Popover menu bar
+    GtkWidget *search;    // Search entry
+    GtkWidget *searchbar; // Search bar
+    GtkWidget *view;      // Entry list view
 };
 
 G_DEFINE_TYPE(WlipShell, wlip_shell, G_TYPE_OBJECT)
@@ -55,13 +57,20 @@ wlip_shell_init(WlipShell *self)
     gtk_layer_set_layer(GTK_WINDOW(self->win), GTK_LAYER_SHELL_LAYER_OVERLAY);
 
     self->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_window_set_child(GTK_WINDOW(self->win), self->vbox);
 
     // TODO
     self->menubar = gtk_popover_menu_bar_new_from_model(NULL);
     gtk_box_append(GTK_BOX(self->vbox), self->menubar);
 
     self->search = gtk_search_entry_new();
-    gtk_box_append(GTK_BOX(self->vbox), self->search);
+
+    self->searchbar = gtk_search_bar_new();
+    gtk_search_bar_set_search_mode(GTK_SEARCH_BAR(self->searchbar), FALSE);
+    gtk_search_bar_connect_entry(
+        GTK_SEARCH_BAR(self->searchbar), GTK_EDITABLE(self->search)
+    );
+    gtk_box_append(GTK_BOX(self->vbox), self->searchbar);
 }
 
 /*
@@ -74,6 +83,10 @@ wlip_shell_new(WlipDaemon *daemon, WlipList *list)
 
     shell->daemon = g_object_ref(daemon);
     shell->list = g_object_ref(list);
+
+    shell->view = wlip_view_new(daemon, list);
+    gtk_widget_set_vexpand(shell->view, TRUE);
+    gtk_box_append(GTK_BOX(shell->vbox), shell->view);
 
     gtk_window_present(GTK_WINDOW(shell->win));
 

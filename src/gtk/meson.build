@@ -1,7 +1,8 @@
 sources = files(
   'wlipdaemon.c',
   'wliplist.c',
-  'wlipshell.c'
+  'wlipshell.c',
+  'wlipview.c'
 )
 includes = include_directories('.')
 

@@ -29,6 +29,10 @@ struct _WlipListEntry
     guint starred : 1;
     guint current : 1;
 
+    // Type of content that should be shown
+    WlipContentType content;
+    const char     *content_mime; // Owned by "mime_types" hash table
+
     // Maps mime type string to GBytes (or NULL if not loaded).
     GHashTable *mime_types;
 };
@@ -49,6 +53,10 @@ typedef enum
 } WlipListEntryProperties;
 
 static GParamSpec *ENTRY_PROPS[N_ENTRY_PROPS] = {NULL};
+
+static const char *CONTENT_MAP[] = {
+    [WLIP_CONTENT_IMAGE] = "image/*", [WLIP_CONTENT_TEXT] = "text/*"
+};
 
 static void
 wlip_list_entry_get_property(
@@ -103,7 +111,7 @@ wlip_list_entry_class_init(WlipListEntryClass *class)
         G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY
     );
     ENTRY_PROPS[ENTRY_PROP_UPDATE_TIME] = g_param_spec_int64(
-        "update_time",
+        "update-time",
         NULL,
         NULL,
         G_MININT64,
@@ -125,6 +133,8 @@ wlip_list_entry_class_init(WlipListEntryClass *class)
         FALSE,
         G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY
     );
+
+    g_object_class_install_properties(obj_class, N_ENTRY_PROPS, ENTRY_PROPS);
 }
 
 static void
@@ -134,6 +144,7 @@ wlip_list_entry_init(WlipListEntry *self)
     self->mime_types = g_hash_table_new_full(
         g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_bytes_unref
     );
+    self->content = WLIP_CONTENT_UNKNOWN;
 }
 
 /*
@@ -190,6 +201,8 @@ entry_loaded_cb(WlipDaemon *daemon, GAsyncResult *result, GWeakRef *entryref)
     entry->current =
         json_object_get_boolean_member_with_default(resp, "current", FALSE);
 
+    // Add mime types to table initially unloaded. Also find a suitable mime
+    // type to represent the content of this entry.
     if (JSON_NODE_HOLDS_ARRAY(json_object_get_member(resp, "mime_types")))
     {
         JsonArray *mime_types =
@@ -197,12 +210,24 @@ entry_loaded_cb(WlipDaemon *daemon, GAsyncResult *result, GWeakRef *entryref)
 
         for (guint i = 0; i < json_array_get_length(mime_types); i++)
         {
-            const char *mime_type =
-                json_array_get_string_element(mime_types, i);
+            const char *mime_type;
+            char       *copy;
 
+            mime_type = json_array_get_string_element(mime_types, i);
             if (mime_type == NULL)
                 continue;
-            g_hash_table_insert(entry->mime_types, g_strdup(mime_type), NULL);
+
+            copy = g_strdup(mime_type);
+            g_hash_table_insert(entry->mime_types, copy, NULL);
+
+            if (entry->content_mime == NULL)
+                for (size_t m = 0; m < G_N_ELEMENTS(CONTENT_MAP); m++)
+                    if (g_content_type_is_a(mime_type, CONTENT_MAP[m]))
+                    {
+                        entry->content = m;
+                        entry->content_mime = copy;
+                        break;
+                    }
         }
     }
 

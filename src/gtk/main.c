@@ -1,7 +1,9 @@
 #include "wlipdaemon.h"
 #include "wliplist.h"
+#include "wlipshell.h"
 #include <glib-unix.h>
 #include <glib.h>
+#include <gtk/gtk.h>
 
 static gboolean
 signal_handler(GMainLoop *loop)
@@ -36,8 +38,11 @@ main(int argc G_GNUC_UNUSED, char **argv G_GNUC_UNUSED)
         g_unix_signal_add(SIGINT, (GSourceFunc)signal_handler, loop),
     };
 
+    gtk_init();
+
     g_autoptr(WlipDaemon) daemon = wlip_daemon_new(NULL, NULL);
     g_autoptr(WlipList) list = wlip_list_new(daemon);
+    g_autoptr(WlipShell) shell = wlip_shell_new(daemon, list);
 
     g_main_loop_run(loop);
 
