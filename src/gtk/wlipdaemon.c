@@ -42,7 +42,7 @@ static guint SIGNALS[N_SIGNALS] = {0};
 
 static const char *REQUEST_NAMES[N_WLIP_DAEMON_REQUESTS] = {
     [WLIP_DAEMON_REQUEST_ENTRY] = "entry",
-    [WLIP_DAEMON_REQUEST_SUBSCRIBE] = "subscribe",
+    [WLIP_DAEMON_REQUEST_EVENT_STREAM] = "event_stream",
     [WLIP_DAEMON_REQUEST_HISTORY_SIZE] = "history_size"
 };
 
@@ -166,11 +166,9 @@ wlip_daemon_stop(WlipDaemon *self)
  * Send a request to the daemon asynchronously. The variadic arguments depend on
  * "req":
  *
- * WLIP_DAEMON_REQUEST_ENTRY: "int64_t index, int64_t id"
- * If "index" is -1, then "id" is used, otherwise "id" is ignored (and is not
- * required).
+ * WLIP_DAEMON_REQUEST_ENTRY: "int64_t pos"
  *
- * WLIP_DAEMON_REQUEST_SUBSCRIBE: "const char * event, ..., NULL"
+ * WLIP_DAEMON_REQUEST_EVENT_STREAM: "gboolean enable"
  *
  * WLIP_DAEMON_REQUEST_HISTORY_SIZE: no args
  */
@@ -204,37 +202,15 @@ wlip_daemon_request_async(
     switch (req)
     {
     case WLIP_DAEMON_REQUEST_ENTRY:
-    {
-        int64_t index = va_arg(ap, int64_t);
-
-        if (index == -1)
-            g_string_append_printf(
-                str, ",\"id\":%" G_GINT64_FORMAT, va_arg(ap, int64_t)
-            );
-        else
-            g_string_append_printf(str, ",\"index\":%" G_GINT64_FORMAT, index);
+        g_string_append_printf(
+            str, ",\"pos\":%" G_GINT64_FORMAT, va_arg(ap, int64_t)
+        );
         break;
-    }
-    case WLIP_DAEMON_REQUEST_SUBSCRIBE:
-    {
-        gboolean first = TRUE;
-
-        g_string_append_printf(str, ",\"events\":[");
-        while (TRUE)
-        {
-            const char *event = va_arg(ap, const char *);
-
-            if (event == NULL)
-                break;
-            if (!first)
-                g_string_append_c(str, ',');
-
-            g_string_append_printf(str, "\"%s\"", event);
-            first = FALSE;
-        }
-        g_string_append_printf(str, "]");
+    case WLIP_DAEMON_REQUEST_EVENT_STREAM:
+        g_string_append_printf(
+            str, ",\"enable\":%s", va_arg(ap, gboolean) ? "true" : "false"
+        );
         break;
-    }
     case WLIP_DAEMON_REQUEST_HISTORY_SIZE:
         break;
     default:

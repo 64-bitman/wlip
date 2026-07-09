@@ -19,13 +19,6 @@
 #define ERRMSG_DB "Database transaction failed"
 #define ERRMSG_INVALID_ARGS "Missing or invalid arguments"
 
-struct ipc_request
-{
-    struct ipc_connection *ct;
-    struct json_object    *req;
-    struct json_object    *resp;
-};
-
 // clang-format off
 static void ipc_check(int revents, void *udata);
 
@@ -34,40 +27,105 @@ static void ipc_connection_free(struct ipc_connection *ct);
 static void ipc_connection_check(int revents, void *udata);
 
 static void ipc_connection_queue_message(struct ipc_connection *ct, struct json_object *obj);
-static void ipc_request_respond_error(struct ipc_request *req, const char *desc);
 
-static void ipc_request_handle_entry(struct ipc_request *req);
-static void ipc_request_handle_mimetype(struct ipc_request *req);
-static void ipc_request_handle_set(struct ipc_request *req);
-static void ipc_request_handle_delete(struct ipc_request *req);
-static void ipc_request_handle_subscribe(struct ipc_request *req);
-static void ipc_request_handle_history_size(struct ipc_request *req);
-static void ipc_request_handle_set_starred(struct ipc_request *req);
+static void ipc_connection_error(struct ipc_connection *ct, int64_t serial, const char *desc);
+
+static void ipc_connection_handle_event_stream(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_entry(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_mimetype(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_set(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_delete(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_history_size(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_starred(struct ipc_connection *ct, int64_t serial, struct json_object *req);
 // clang-format on
 
-#define REQUEST_HANDLER(name) {STRINGIFY(name), ipc_request_handle_##name}
-static struct
+#define REQUEST_HANDLER(name) {STRINGIFY(name), ipc_connection_handle_##name}
+static struct request_handler
 {
     const char *name;
-    void (*callback)(struct ipc_request *);
+    // clang-format off
+    void (*callback)(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+    // clang-format on
 } REQUEST_HANDLERS[] = {
+    /*
+     * "event_stream" request:
+     * Enable or disable receiving events from the daemon. Arguments:
+     * "enable": boolean
+     * If events should be received
+     */
+    REQUEST_HANDLER(event_stream),
+    /*
+     * "entry" request:
+     * Get info about an entry at a given position. Arguments:
+     * "pos": int64_t
+     * Position of entry to use
+     *
+     * Returned fields:
+     * "id": int64_t
+     * ID of entry
+     * "creation_time": int64_t
+     * Creation time in Unix time (ms)
+     * "update_time": int64_t
+     * Last time entry was updated/used in Unix time (ms)
+     * "starred": boolean
+     * If entry is starred
+     * "current": boolean
+     * If entry is currently set as the current entry
+     * "mime_types" const char *[]
+     * Array of mime types for this entry
+     */
     REQUEST_HANDLER(entry),
+    /*
+     * "mimetype" request:
+     * Get the contents of a mime type as a base64 encoded string. Arguments:
+     * "id": int64_t
+     * ID of entry to use
+     * "mime_type": const char *
+     * Mime type to use
+     *
+     * Returned fields:
+     * "data": const char *
+     * Base64 encoded string of contents
+     */
     REQUEST_HANDLER(mimetype),
+    /*
+     * "set" request:
+     * Set the current entry. Arguments:
+     * "id": int64_t
+     * ID of entry to set
+     *
+     * Return success response
+     */
     REQUEST_HANDLER(set),
+    /*
+     * "delete" request:
+     * Delete a entry. Arguments:
+     * "id" int64_t
+     * ID of entry to delete
+     *
+     * Return success response
+     */
     REQUEST_HANDLER(delete),
-    REQUEST_HANDLER(subscribe),
+    /*
+     * "history_size" request:
+     * Get number of entries in clipboard history.
+     *
+     * Returned fields:
+     * "size": int64_t
+     * Number of entries
+     */
     REQUEST_HANDLER(history_size),
-    REQUEST_HANDLER(set_starred)
+    /*
+     * "starred" request:
+     * Set starred state of entry. Arguments:
+     * "id" int64_t
+     * ID of entry to change
+     * "starred": boolean
+     * New starred state to use
+     */
+    REQUEST_HANDLER(starred),
 };
-
-static const char *EVENTS[N_IPC_EVENTS] = {
-    [__builtin_ctz(IPC_EVENT_NEW)] = "new",
-    [__builtin_ctz(IPC_EVENT_CURRENT)] = "current",
-    [__builtin_ctz(IPC_EVENT_CLEARED)] = "cleared",
-    [__builtin_ctz(IPC_EVENT_DELETE)] = "deleted",
-    [__builtin_ctz(IPC_EVENT_STARRED)] = "starred",
-    [__builtin_ctz(IPC_EVENT_UPDATED)] = "updated",
-};
+#undef REQUEST_HANDLER
 
 /*
  * Initialize IPC server at "socket_path". If "socket_path" is NULL, then
@@ -244,89 +302,33 @@ ipc_check(int revents, void *udata)
 }
 
 /*
- * Emit an event to all subscribers. Takes ownership of "args". Variadic
- * arguments depend on the type:
- *
- * Common arguments:
- * "int64_t id, int64_t idx": if "idx" is -1, then it is automatically
- * calculated. Note that for IPC_EVENT_DELETE, "idx" must be passed.
- *
- * IPC_EVENT_NEW: none
- * IPC_EVENT_CURRENT: none
- * IPC_EVENT_DELETE: none
- * IPC_EVENT_STARRED: "bool starred"
- * IPC_EVENT_UPDATED: "int64_t update_time"
- *
- * Other:
- * IPC_EVENT_CLEARED: no args
+ * Emit the given event with arguments depending on "fmt". See
+ * build_json_object() on how format string works.
  */
 void
-ipc_emit_event(struct ipc *ipc, enum ipc_event type, ...)
+ipc_emit_event(struct ipc *ipc, const char *event, const char *fmt, ...)
 {
+    struct json_object *msg = NULL;
+    va_list             ap;
+
     if (wl_list_empty(&ipc->connections))
-        // Make sure to free any arguments here!
         return;
 
-    struct json_object *event = json_object_new_object();
-
-    if (event == NULL)
-    {
-        log_errwarn("Error allocating JSON object");
-        return;
-    }
-
-    va_list ap;
-
-    va_start(ap, type);
-    switch (type)
-    {
-    case IPC_EVENT_NEW:
-    case IPC_EVENT_CURRENT:
-    case IPC_EVENT_DELETE:
-    case IPC_EVENT_STARRED:
-    case IPC_EVENT_UPDATED:
-    {
-        int64_t id = va_arg(ap, int64_t);
-        int64_t idx = va_arg(ap, int64_t);
-
-        assert(type != IPC_EVENT_DELETE || idx != -1);
-        if (idx == -1)
-            idx = database_get_index(&ipc->wlip->database, id);
-
-        if (idx == -1)
-        {
-            json_object_put(event);
-            va_end(ap);
-            return;
-        }
-
-        add_json_integer(event, "id", id, true);
-        add_json_integer(event, "index", idx, true);
-        if (type == IPC_EVENT_STARRED)
-            add_json_boolean(event, "starred", va_arg(ap, int), true);
-        else if (type == IPC_EVENT_UPDATED)
-            add_json_integer(event, "update_time", va_arg(ap, int64_t), true);
-
-        break;
-    }
-    case IPC_EVENT_CLEARED:
-        break;
-    default:
-        log_abort("Unknown event type %d", type);
-    }
+    msg = build_json_object(msg, "ss", "type", "event", "event", event);
+    va_start(ap, fmt);
+    msg = build_json_object_va(msg, fmt, ap);
     va_end(ap);
-
-    add_json_string(event, "type", "event", true);
-    add_json_string(event, "event", EVENTS[__builtin_ctz(type)], true);
+    if (msg == NULL)
+        return;
 
     struct ipc_connection *ct;
 
     wl_list_for_each(ct, &ipc->connections, link)
     {
-        if (ct->subbed_events & type)
-            ipc_connection_queue_message(ct, event);
+        if (ct->events)
+            ipc_connection_queue_message(ct, msg);
     }
-    json_object_put(event);
+    json_object_put(msg);
 }
 
 /*
@@ -352,7 +354,7 @@ ipc_connection_add(struct ipc *ipc, int fd)
     eventloop_add_source(ipc->wlip->loop, &ct->source);
 
     ct->ipc = ipc;
-    ct->subbed_events = IPC_EVENT_NONE;
+    ct->events = false;
     wl_list_init(&ct->write_queue);
 
     wl_list_insert(&ipc->connections, &ct->link);
@@ -383,40 +385,32 @@ static void
 request_handler(struct json_object *req_obj, void *udata)
 {
     struct ipc_connection *ct = udata;
-    struct ipc_request     req;
-    int64_t                serial;
 
-    req.resp = json_object_new_object();
-    if (req.resp == NULL ||
-        get_json_integer(req_obj, "serial", &serial) == FAIL)
+    const char *type;
+    int64_t     serial;
+
+    if (extract_json_object(req_obj, "si", "type", &type, "serial", &serial) ==
+        FAIL)
         goto exit;
-
-    add_json_integer(req.resp, "serial", serial, true);
-    req.ct = ct;
-    req.req = req_obj;
-
-    const char *type = get_json_string(req_obj, "type");
 
     if (type != NULL)
     {
-        bool did = false;
+        struct request_handler *handler = NULL;
 
         for (int i = 0; i < N_ELEMENTS(REQUEST_HANDLERS); i++)
             if (strcmp(type, REQUEST_HANDLERS[i].name) == 0)
             {
-                REQUEST_HANDLERS[i].callback(&req);
-                did = true;
+                handler = REQUEST_HANDLERS + i;
                 break;
             }
-
-        if (!did)
-            ipc_request_respond_error(&req, ERRMSG_INVALID_ARGS);
+        if (handler == NULL)
+            ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
+        else
+            handler->callback(ct, serial, req_obj);
     }
 
 exit:
-    if (req.resp != NULL)
-        json_object_put(req.resp);
-    json_object_put(req.req);
+    json_object_put(req_obj);
 }
 
 /*
@@ -498,8 +492,8 @@ try_write:
 }
 
 /*
- * Queue message "obj" onto the connection queue, to be sent to the client.
- * Creates a new reference to "obj".
+ * Queue message "obj" onto the connection queue, to be sent to the client. Adds
+ * a new reference to "obj".
  */
 static void
 ipc_connection_queue_message(struct ipc_connection *ct, struct json_object *obj)
@@ -509,7 +503,7 @@ ipc_connection_queue_message(struct ipc_connection *ct, struct json_object *obj)
     if (msg == NULL)
         return;
 
-    msg->resp = obj;
+    msg->resp = obj; // Reference is added at end of func
     msg->data = json_object_to_json_string_length(
         obj, JSON_C_TO_STRING_PLAIN, &msg->remaining
     );
@@ -526,137 +520,150 @@ ipc_connection_queue_message(struct ipc_connection *ct, struct json_object *obj)
 }
 
 /*
- * Respond to the given request using the response object in "req".
+ * Send back a response using "fmt" for the arguments.
  */
 static void
-ipc_request_respond(struct ipc_request *req)
-{
-    add_json_string(req->resp, "type", "response", true);
-    ipc_connection_queue_message(req->ct, req->resp);
-}
-
-/*
- * Send a response indicating success.
- */
-static void
-ipc_request_respond_success(struct ipc_request *req)
-{
-    add_json_string(req->resp, "type", "success", true);
-    ipc_connection_queue_message(req->ct, req->resp);
-}
-
-/*
- * Send an error response to the client, with the given description.
- */
-static void
-ipc_request_respond_error(struct ipc_request *req, const char *desc)
-{
-    add_json_string(req->resp, "type", "error", true);
-    add_json_string(req->resp, "desc", desc, true);
-    ipc_connection_queue_message(req->ct, req->resp);
-}
-
-/*
- * Add relevant information of an entry to the request response. Returns OK on
- * success and FAIL on failure. If FAIL is returned, an error response will be
- * queued for the request.
- */
-static int
-construct_entry_response(
-    struct database *db, struct database_entry *entry, struct ipc_request *req
+ipc_connection_respond(
+    struct ipc_connection *ct, int64_t serial, const char *fmt, ...
 )
 {
-    struct json_object *arr = json_object_new_array();
+    struct json_object *resp = NULL;
 
-    if (arr != NULL)
-    {
-        database_add_mime_types(db, entry->id, arr);
-        json_object_object_add_ex(
-            req->resp, "mime_types", arr, JSON_C_OBJECT_ADD_CONSTANT_KEY
-        );
-    }
-    else
-    {
-        ipc_request_respond_error(req, ERRMSG_MEM);
-        return FAIL;
-    }
+    resp = build_json_object(resp, "si", "type", "response", "serial", serial);
 
-    add_json_integer(req->resp, "id", entry->id, true);
-    add_json_integer(req->resp, "creation_time", entry->creation_time, true);
-    add_json_integer(req->resp, "update_time", entry->update_time, true);
-    add_json_boolean(req->resp, "starred", entry->starred, true);
-    add_json_boolean(
-        req->resp, "current", db->wlip->wayland.entry_id == entry->id, true
+    va_list ap;
+    va_start(ap, fmt);
+    resp = build_json_object_va(resp, fmt, ap);
+    va_end(ap);
+    if (resp == NULL)
+        return;
+
+    ipc_connection_queue_message(ct, resp);
+    json_object_put(resp);
+}
+
+/*
+ * Send back a success response
+ */
+static void
+ipc_connection_success(struct ipc_connection *ct, int64_t serial)
+{
+    struct json_object *resp = NULL;
+
+    resp = build_json_object(resp, "si", "type", "success", "serial", serial);
+    if (resp == NULL)
+        return;
+
+    ipc_connection_queue_message(ct, resp);
+    json_object_put(resp);
+}
+
+/*
+ * Send back an error response
+ */
+static void
+ipc_connection_error(
+    struct ipc_connection *ct, int64_t serial, const char *desc
+)
+{
+    struct json_object *resp = NULL;
+
+    resp = build_json_object(
+        resp, "sis", "type", "error", "serial", serial, "desc", desc
     );
+    if (resp == NULL)
+        return;
 
-    return OK;
+    ipc_connection_queue_message(ct, resp);
+    json_object_put(resp);
 }
 
 static void
-ipc_request_handle_entry(struct ipc_request *req)
+ipc_connection_handle_event_stream(
+    struct ipc_connection *ct, int64_t serial, struct json_object *req
+)
 {
-    struct ipc_connection *ct = req->ct;
-    struct database       *db = &ct->ipc->wlip->database;
-    int64_t                idx, id;
-    struct database_entry  entry;
+    bool enable;
 
-    if (database_do_transaction(db, TRANSACTION_BEGIN) == FAIL)
+    if (extract_json_object(req, "b", "enable", &enable) == FAIL)
     {
-        ipc_request_respond_error(req, ERRMSG_DB);
+        ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
         return;
     }
 
-    if (get_json_integer(req->req, "index", &idx) == FAIL)
-    {
-        if (get_json_integer(req->req, "id", &id) == FAIL)
-        {
-            ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
-            goto exit;
-        }
-        else if (database_deserialize_entry_id(db, id, &entry) == FAIL)
-        {
-            ipc_request_respond_error(req, ERRMSG_DB);
-            goto exit;
-        }
-    }
-    else if (database_deserialize_entry(db, idx, &entry) == FAIL)
-    {
-        ipc_request_respond_error(req, ERRMSG_DB);
-        goto exit;
-    }
-
-    if (construct_entry_response(db, &entry, req) == OK)
-        ipc_request_respond(req);
-
-exit:
-    database_do_transaction(db, TRANSACTION_COMMIT);
+    ct->events = enable;
+    ipc_connection_success(ct, serial);
 }
 
 static void
-ipc_request_handle_mimetype(struct ipc_request *req)
+ipc_connection_handle_entry(
+    struct ipc_connection *ct, int64_t serial, struct json_object *req
+)
 {
-    struct database *db = &req->ct->ipc->wlip->database;
-    int64_t          id;
+    int64_t index;
 
-    if (get_json_integer(req->req, "id", &id) == FAIL)
+    if (extract_json_object(req, "i", "pos", &index) == FAIL)
     {
-        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
+        ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
         return;
     }
 
-    const char *mime_type = get_json_string(req->req, "mime_type");
+    struct database      *db = &ct->ipc->wlip->database;
+    struct database_entry entry;
 
-    if (mime_type == NULL)
+    if (database_deserialize_entry(db, index, &entry) == FAIL)
     {
-        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
+        ipc_connection_error(ct, serial, ERRMSG_DB);
         return;
     }
+
+    struct json_object *mime_types = json_object_new_array();
+
+    if (mime_types != NULL)
+        database_add_mime_types_to_json(db, entry.id, mime_types);
+
+    ipc_connection_respond(
+        ct,
+        serial,
+        "iiibbo",
+        "id",
+        entry.id,
+        "creation_time",
+        entry.creation_time,
+        "update_time",
+        entry.update_time,
+        "starred",
+        entry.starred,
+        "current",
+        entry.id == ct->ipc->wlip->wayland.entry_id,
+        "mime_types",
+        mime_types
+    );
+    json_object_put(mime_types);
+}
+
+static void
+ipc_connection_handle_mimetype(
+    struct ipc_connection *ct, int64_t serial, struct json_object *req
+)
+{
+    int64_t     id;
+    const char *mime_type;
+
+    if (extract_json_object(req, "is", "id", &id, "mime_type", &mime_type) ==
+        FAIL)
+    {
+        ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
+        return;
+    }
+
+    struct database *db = &ct->ipc->wlip->database;
 
     sqlite3_stmt *stmt = database_deserialize_mime_type_data(db, id, mime_type);
 
     if (stmt == NULL)
     {
-        ipc_request_respond_error(req, ERRMSG_DB);
+        ipc_connection_error(ct, serial, ERRMSG_DB);
         return;
     }
 
@@ -669,163 +676,132 @@ ipc_request_handle_mimetype(struct ipc_request *req)
 
         if (buf == NULL)
         {
-            ipc_request_respond_error(req, ERRMSG_MEM);
+            ipc_connection_error(ct, serial, ERRMSG_MEM);
             goto exit;
         }
 
         b64_encode(data, len, (unsigned char *)buf);
-        add_json_string(req->resp, "data", buf, true);
+        ipc_connection_respond(ct, serial, "s", "data", buf);
         free(buf);
     }
     else
-        add_json_string(req->resp, "data", "", true);
-
-    ipc_request_respond(req);
+        ipc_connection_respond(ct, serial, "s", "data", "");
 
 exit:
     sqlite3_reset(stmt);
 }
 
 static void
-ipc_request_handle_set(struct ipc_request *req)
+ipc_connection_handle_set(
+    struct ipc_connection *ct, int64_t serial, struct json_object *req
+)
 {
-    struct database *db = &req->ct->ipc->wlip->database;
-    int64_t          id;
+    int64_t id;
 
-    if (get_json_integer(req->req, "id", &id) == FAIL)
+    if (extract_json_object(req, "i", "id", &id) == FAIL)
     {
-        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
+        ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
         return;
     }
+
+    struct database *db = &ct->ipc->wlip->database;
 
     // Check if ID is valid
-    if (id != -1 && !database_id_exists(db, id))
+    if (!database_id_exists(db, id))
     {
-        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
+        ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
         return;
     }
 
-    // TODO: update "update_time" for entry
-    wayland_set_selection(&req->ct->ipc->wlip->wayland, id);
-    ipc_request_respond_success(req);
+    wayland_set_selection(&ct->ipc->wlip->wayland, id, true);
+    ipc_connection_success(ct, serial);
 }
 
 static void
-ipc_request_handle_delete(struct ipc_request *req)
+ipc_connection_handle_delete(
+    struct ipc_connection *ct, int64_t serial, struct json_object *req
+)
 {
-    struct wayland  *wayland = &req->ct->ipc->wlip->wayland;
-    struct database *db = &req->ct->ipc->wlip->database;
-    int64_t          id;
+    int64_t id;
 
-    if (get_json_integer(req->req, "id", &id) == FAIL)
+    if (extract_json_object(req, "i", "id", &id) == FAIL)
     {
-        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
+        ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
         return;
     }
 
-    if (database_delete_entry(db, id) == FAIL)
+    struct database *db = &ct->ipc->wlip->database;
+    struct wayland  *wayland = &ct->ipc->wlip->wayland;
+
+    int64_t pos = database_get_index(db, id);
+
+    if (pos == -1 || database_delete_entry(db, id) == FAIL)
     {
-        ipc_request_respond_error(req, ERRMSG_DB);
+        ipc_connection_error(ct, serial, ERRMSG_DB);
         return;
     }
 
-    // If entry is the currently active, then just clear the selection. Let the
-    // client choose if they want to set the selection to another entry.
-    if (id == req->ct->ipc->wlip->wayland.entry_id)
-        wayland_set_selection(wayland, -1);
+    ipc_emit_event(ct->ipc, IPC_EVENT_DELETE, "ii", IPC_ID, id, IPC_POS, pos);
 
-    ipc_request_respond_success(req);
+    // If entry is the currently active, then just clear the selection.
+    if (id == wayland->entry_id)
+        wayland_set_selection(wayland, -1, true);
+
+    ipc_connection_success(ct, serial);
 }
 
 static void
-ipc_request_handle_subscribe(struct ipc_request *req)
+ipc_connection_handle_history_size(
+    struct ipc_connection *ct, int64_t serial, struct json_object *req UNUSED
+)
 {
-    struct json_object *events_arr;
-    int                 events = IPC_EVENT_NONE;
-
-    if (json_object_object_get_ex(req->req, "events", &events_arr) &&
-        json_object_is_type(events_arr, json_type_array))
-    {
-        int len = json_object_array_length(events_arr);
-
-        for (int i = 0; i < len; i++)
-        {
-            struct json_object *j_event =
-                json_object_array_get_idx(events_arr, i);
-            enum ipc_event event = IPC_EVENT_NONE;
-
-            if (json_object_is_type(j_event, json_type_string))
-            {
-                const char *event_name = json_object_get_string(j_event);
-
-                for (int i = 0; i < N_ELEMENTS(EVENTS); i++)
-                    if (strcmp(EVENTS[i], event_name) == 0)
-                    {
-                        event = 1 << i;
-                        break;
-                    }
-            }
-
-            if (event == IPC_EVENT_NONE)
-            {
-                ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
-                return;
-            }
-            events |= event;
-        }
-    }
-    else
-    {
-        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
-        return;
-    }
-
-    req->ct->subbed_events |= events;
-    ipc_request_respond_success(req);
-}
-
-static void
-ipc_request_handle_history_size(struct ipc_request *req)
-{
-    struct database *db = &req->ct->ipc->wlip->database;
+    struct database *db = &ct->ipc->wlip->database;
     int64_t          n = database_get_history_size(db);
 
     if (n == -1)
     {
-        ipc_request_respond_error(req, ERRMSG_DB);
+        ipc_connection_error(ct, serial, ERRMSG_DB);
         return;
     }
 
-    add_json_integer(req->resp, "size", n, true);
-    ipc_request_respond(req);
+    ipc_connection_respond(ct, serial, "i", "size", n);
 }
 
 static void
-ipc_request_handle_set_starred(struct ipc_request *req)
+ipc_connection_handle_starred(
+    struct ipc_connection *ct, int64_t serial, struct json_object *req
+)
 {
-    struct database *db = &req->ct->ipc->wlip->database;
-    int64_t          id;
-    bool             starred;
+    int64_t id;
+    bool    starred;
 
-    if (get_json_integer(req->req, "id", &id) == FAIL ||
-        get_json_boolean(req->req, "starred", &starred) == FAIL)
+    if (extract_json_object(req, "ib", "id", &id, "starred", &starred) == FAIL)
     {
-        ipc_request_respond_error(req, ERRMSG_INVALID_ARGS);
+        ipc_connection_error(ct, serial, ERRMSG_INVALID_ARGS);
         return;
     }
 
-    struct database_entry entry = {
-        .id = id,
-        .starred = starred,
-    };
+    struct database      *db = &ct->ipc->wlip->database;
+    struct database_entry entry;
+
+    entry.id = id;
+    entry.starred = starred;
+    entry.flags = DATABASE_ENTRY_STARRED;
 
     if (database_serialize_entry(db, &entry) == -1)
     {
-        ipc_request_respond_error(req, ERRMSG_DB);
+        ipc_connection_error(ct, serial, ERRMSG_DB);
+        return;
     }
-    else
-    {
-        ipc_request_respond_success(req);
-        ipc_emit_event(req->ct->ipc, IPC_EVENT_STARRED, starred);
-    }
+
+    ipc_emit_event(
+        ct->ipc,
+        IPC_EVENT_UPDATE,
+        "ib",
+        IPC_UPDATE_TIME,
+        entry.update_time,
+        IPC_STARRED,
+        starred
+    );
+    ipc_connection_success(ct, serial);
 }

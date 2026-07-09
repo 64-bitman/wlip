@@ -438,8 +438,7 @@ database_do_transaction(struct database *db, enum database_transaction type)
  * then a new entry is created automatically, and its ID is returned. If "entry"
  * is not NULL, a new update time is calculated and stored.
  *
- * Note that this does only emits IPC events when entry is updated ("entry" is
- * not NULL).
+ * Note that this does not emit IPC events
  *
  * Returns 1 on failure.
  */
@@ -454,7 +453,10 @@ database_serialize_entry(struct database *db, struct database_entry *entry)
         stmt = db->stmt.update_entry;
         entry->update_time = t;
         sqlite3_bind_int64(stmt, 1, t);
-        sqlite3_bind_int(stmt, 2, entry->starred);
+        if (entry->flags & DATABASE_ENTRY_STARRED)
+            sqlite3_bind_int(stmt, 2, entry->starred);
+        else
+            sqlite3_bind_null(stmt, 2);
         sqlite3_bind_int64(stmt, 3, entry->id);
     }
     else
@@ -481,16 +483,29 @@ database_serialize_entry(struct database *db, struct database_entry *entry)
     if (entry == NULL)
         id = sqlite3_column_int64(stmt, 0);
     else
-    {
         id = entry->id;
-        ipc_emit_event(&db->wlip->ipc, IPC_EVENT_UPDATED, entry->update_time);
-    }
 
 exit:
     sqlite3_reset(stmt);
     sqlite3_clear_bindings(stmt);
 
     return id;
+}
+
+/*
+ * Update the "update_time" property of the entry. Wrapper around
+ * database_serialize_entry(). Returns update time. Note that this does not emit
+ * an IPC event!
+ */
+int64_t
+database_update_entry(struct database *db, int64_t id)
+{
+    struct database_entry entry = {0};
+
+    entry.id = id;
+
+    (void)database_serialize_entry(db, &entry);
+    return entry.update_time;
 }
 
 static int
@@ -792,7 +807,7 @@ database_deserialize_entry_id(
  * Add mime types to JSON array "obj" for entry "id".
  */
 void
-database_add_mime_types(
+database_add_mime_types_to_json(
     struct database *db, int64_t id, struct json_object *obj
 )
 {
@@ -895,7 +910,8 @@ database_get_int_setting(struct database *db, const char *key, int64_t *val)
 }
 
 /*
- * Delete entry "id" from database. Returns OK on success and FAIL on failure.
+ * Delete entry "id" from database (no IPC events are emitted). Returns OK on
+ * success and FAIL on failure.
  */
 int
 database_delete_entry(struct database *db, int64_t id)
@@ -922,8 +938,6 @@ database_delete_entry(struct database *db, int64_t id)
             );
         return FAIL;
     }
-
-    ipc_emit_event(&db->wlip->ipc, IPC_EVENT_DELETE, id, idx);
 
     return OK;
 }

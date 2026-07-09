@@ -7,6 +7,8 @@
 static void
 free_entry_weak_ref(GWeakRef *entryref)
 {
+    if (entryref == NULL)
+        return;
     g_weak_ref_clear(entryref);
     g_free(entryref);
 }
@@ -166,6 +168,7 @@ struct _WlipList
     int64_t n_entries;
 
     // Sequence of currently instantiated entries, stored in GWeakRef objects.
+    // Note that NULL may also be stored (same as empty GWeakRef).
     GSequence *entries;
 };
 
@@ -178,8 +181,7 @@ entry_loaded_cb(WlipDaemon *daemon, GAsyncResult *result, GWeakRef *entryref)
     g_autoptr(WlipListEntry) entry = g_weak_ref_get(entryref);
 
     free_entry_weak_ref(entryref);
-    if (entry == NULL)
-        // Entry finalized, do nothing
+    if (resp == NULL || entry == NULL)
         return;
 
     entry->id = json_object_get_int_member_with_default(resp, "id", -1);
@@ -254,7 +256,7 @@ wlip_list_get_item(GListModel *list, guint position)
 
     iter = g_sequence_get_iter_at_pos(self->entries, position);
 
-    if (g_sequence_iter_is_end(iter))
+    if (g_sequence_iter_is_end(iter) || g_sequence_get(iter) == NULL)
     {
         // Create new entry object and start loading it.
         entryref = g_new(GWeakRef, 1);
@@ -357,30 +359,28 @@ event_cb(WlipDaemon *daemon G_GNUC_UNUSED, JsonObject *event, WlipList *list)
     if (event_type == NULL)
         return;
 
-    if (strcmp(event_type, "cleared") == 0)
+    if (strcmp(event_type, "add") == 0)
     {
+        GSequenceIter *iter = g_sequence_get_iter_at_pos(list->entries, 0);
+
+        // Make sure to shift entries
+        g_sequence_insert_before(iter, NULL);
+        list->n_entries++;
+
+        g_list_model_items_changed(G_LIST_MODEL(list), 0, 0, 1);
     }
-    else
+    else if (strcmp(event_type, "delete") == 0)
     {
-        int64_t id = json_object_get_int_member_with_default(event, "id", -1);
-        int64_t idx =
-            json_object_get_int_member_with_default(event, "index", -1);
+        int64_t pos = json_object_get_int_member_with_default(event, "pos", -1);
 
-        if (id == -1 || idx == -1)
-            return;
-
-        if (strcmp(event_type, "new") == 0)
-        {
-            g_list_model_items_changed(G_LIST_MODEL(list), idx, 0, 1);
-        }
-        if (strcmp(event_type, "deleted") == 0)
+        if (pos != -1)
         {
             GSequenceIter *iter =
-                g_sequence_get_iter_at_pos(list->entries, idx);
+                g_sequence_get_iter_at_pos(list->entries, pos);
 
             if (!g_sequence_iter_is_end(iter))
                 g_sequence_remove(iter);
-            g_list_model_items_changed(G_LIST_MODEL(list), idx, 1, 0);
+            g_list_model_items_changed(G_LIST_MODEL(list), pos, 1, 0);
         }
     }
 }
@@ -406,17 +406,10 @@ history_size_cb(WlipDaemon *daemon, GAsyncResult *result, WlipList *list)
     );
     wlip_daemon_request_async(
         list->daemon,
-        WLIP_DAEMON_REQUEST_SUBSCRIBE,
+        WLIP_DAEMON_REQUEST_EVENT_STREAM,
         G_PRIORITY_LOW,
         NULL,
         NULL,
-        NULL,
-        "new",
-        "current",
-        "cleared",
-        "deleted",
-        "starred",
-        "updated",
         NULL
     );
     g_list_model_items_changed(G_LIST_MODEL(list), 0, 0, list->n_entries);

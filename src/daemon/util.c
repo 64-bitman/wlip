@@ -328,36 +328,193 @@ add_json_boolean(
 }
 
 /*
- * Add a string value to a JSON object.
+ * Build a JSON object (or modify existing one if "obj" is not NULL) using
+ * "fmt". Each argument is pair, the member name as a static string and the
+ * value.
+ *
+ * "s": string only
+ * "S": string + length
+ * "i": 64 bit integer
+ * "b": Boolean
+ * "o": Any json object (reference will be added). If it is NULL, then it will
+ * be ignored.
+ *
+ * Returns NULL on failure.
  */
-void
-add_json_string(
-    struct json_object *obj,
-    const char         *key,
-    const char         *val,
-    bool                key_is_static
-)
+struct json_object *
+build_json_object_va(struct json_object *obj, const char *fmt, va_list ap)
 {
-    json_object_object_add_ex(
-        obj,
-        key,
-        json_object_new_string(val),
-        key_is_static ? JSON_C_OBJECT_ADD_CONSTANT_KEY : 0
-    );
+    if (obj == NULL)
+        obj = json_object_new_object();
+
+    if (obj == NULL)
+        return NULL;
+
+    for (const char *c = fmt; *c != NUL; c++)
+    {
+        const char         *key = va_arg(ap, const char *);
+        struct json_object *val;
+
+        switch (*c)
+        {
+        case 's':
+            val = json_object_new_string(va_arg(ap, const char *));
+            break;
+        case 'S':
+            val = json_object_new_string_len(
+                va_arg(ap, const char *), va_arg(ap, size_t)
+            );
+            break;
+        case 'i':
+            val = json_object_new_int64(va_arg(ap, int64_t));
+            break;
+        case 'b':
+            val = json_object_new_boolean(va_arg(ap, int));
+            break;
+        case 'o':
+            val = va_arg(ap, struct json_object *);
+            if (val != NULL)
+                val = json_object_get(val);
+            break;
+        default:
+            log_abort("Unknown JSON type \"%c\"", *c);
+        }
+
+        if (val == NULL)
+            continue;
+
+        json_object_object_add_ex(
+            obj, key, val, JSON_C_OBJECT_ADD_CONSTANT_KEY
+        );
+    }
+
+    return obj;
+}
+
+struct json_object *
+build_json_object(struct json_object *obj, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    obj = build_json_object_va(obj, fmt, ap);
+    va_end(ap);
+    return obj;
 }
 
 /*
- * Add a string value to a JSON array.
+ * Opposite of build_json_object(), uses same format string style.
+ *
+ *
+ * Difference is that each value is a pointer to where the value should be
+ * stored. If type character is prefixed by '?', then it is optional, arg after
+ * key name will be a boolean pointer indicating if key was found. For 'o' type,
+ * arg after key name and '?' is expected json type (no reference will be
+ * added).
+ *
+ * Returns OK on success and FAIL on failure.
  */
-void
-add_json_arr_string(struct json_object *arr, const char *val)
+int
+extract_json_object(struct json_object *obj, const char *fmt, ...)
 {
-    json_object_array_add(arr, json_object_new_string(val));
+    va_list ap;
+    int     ret = FAIL;
+
+    va_start(ap, fmt);
+
+    for (const char *c = fmt; *c != NUL; c++)
+    {
+        if (*c == '?')
+            continue;
+
+        const char         *key = va_arg(ap, const char *);
+        struct json_object *val;
+        bool                opt = c != fmt && c[-1] == '?';
+        bool                found;
+
+        found = json_object_object_get_ex(obj, key, &val);
+
+        if (!found && !opt)
+            goto fail;
+
+        if (opt)
+            *va_arg(ap, bool *) = found;
+
+        switch (*c)
+        {
+        case 's':
+        {
+            if (!json_object_is_type(val, json_type_string))
+                goto fail;
+
+            const char **store = va_arg(ap, const char **);
+            if (found)
+                *store = json_object_get_string(val);
+            break;
+        }
+        case 'S':
+        {
+            if (!json_object_is_type(val, json_type_string))
+                goto fail;
+
+            const char **store = va_arg(ap, const char **);
+            size_t      *sz = va_arg(ap, size_t *);
+
+            if (found)
+            {
+                *store = json_object_get_string(val);
+                *sz = json_object_get_string_len(val);
+            }
+            break;
+        }
+        case 'i':
+        {
+            if (!json_object_is_type(val, json_type_int))
+                goto fail;
+
+            int64_t *store = va_arg(ap, int64_t *);
+
+            if (found)
+                *store = json_object_get_int64(val);
+            break;
+        }
+        case 'b':
+        {
+            if (!json_object_is_type(val, json_type_boolean))
+                goto fail;
+
+            bool *store = va_arg(ap, bool *);
+
+            if (found)
+                *store = json_object_get_boolean(val);
+            break;
+        }
+        case 'o':
+        {
+            if (!json_object_is_type(val, va_arg(ap, enum json_type)))
+                goto fail;
+
+            struct json_object **store = va_arg(ap, struct json_object **);
+
+            if (found)
+                *store = val;
+            break;
+        }
+        default:
+            log_abort("Unknown JSON type \"%c\"", *c);
+        }
+    }
+
+    ret = OK;
+fail:
+    va_end(ap);
+    return ret;
 }
 
 /*
  * Process the buffer containing JSON messages delimited by newlines. For each
- * message, call "callback". Returns OK on success and FAIL on failure.
+ * message, call "callback" (note that ownership of JSON object is passed on).
+ * Returns OK on success and FAIL on failure.
  */
 int
 process_json_buffer(
@@ -403,7 +560,7 @@ process_json_buffer(
             break;
         else
         {
-            log_error(
+            log_warn(
                 "Error parsing JSON message: %s", json_tokener_error_desc(j_err)
             );
             return FAIL;

@@ -87,6 +87,9 @@ void add_json_integer(struct json_object *obj, const char *key, int64_t val, boo
 void add_json_boolean(struct json_object *obj, const char *key, bool val, bool key_is_static);
 void add_json_string(struct json_object *obj, const char *key, const char *val, bool key_is_static);
 void add_json_arr_string(struct json_object *arr, const char *val);
+struct json_object *build_json_object_va(struct json_object *obj, const char *fmt, va_list ap);
+struct json_object *build_json_object(struct json_object *obj, const char *fmt, ...);
+int extract_json_object(struct json_object *obj, const char *fmt, ...);
 
 int process_json_buffer(const char *buf, size_t buflen, struct json_tokener *tokener, json_callback callback, void *udata);
 

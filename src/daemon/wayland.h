@@ -75,5 +75,5 @@ struct wayland
 int wayland_init(struct wayland *wayland, struct wlip *wlip);
 void wayland_uninit(struct wayland *wayland);
 
-void wayland_set_selection(struct wayland *wayland, int64_t id);
+void wayland_set_selection(struct wayland *wayland, int64_t id, bool update);
 // clang-format on

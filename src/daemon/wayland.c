@@ -136,19 +136,40 @@ wayland_uninit(struct wayland *wayland)
 }
 
 /*
- * Sync all selections to entry "id", an id of -1 clears all selections.
+ * Sync all selections to entry "id", an id of -1 clears all selections. If
+ * "update" is FALSE, then dont update "update_time" and emit IPC_EVENT_UPDATE
+ * event.
  */
 void
-wayland_set_selection(struct wayland *wayland, int64_t id)
+wayland_set_selection(struct wayland *wayland, int64_t id, bool update)
 {
     struct wayland_seat *seat;
 
+    if (wayland->entry_id != -1)
+        ipc_emit_event(
+            &wayland->wlip->ipc,
+            IPC_EVENT_STATE,
+            "ib",
+            IPC_ID,
+            wayland->entry_id,
+            "set",
+            false
+        );
+    if (id != -1)
+        ipc_emit_event(
+            &wayland->wlip->ipc, IPC_EVENT_STATE, "ib", IPC_ID, id, "set", true
+        );
+
     wayland->entry_id = id;
+    if (update)
+        ipc_emit_event(
+            &wayland->wlip->ipc,
+            IPC_EVENT_UPDATE,
+            "i",
+            IPC_UPDATE_TIME,
+            database_update_entry(&wayland->wlip->database, id)
+        );
     database_save_int_setting(&wayland->wlip->database, "Last_entry", id);
-    if (id == -1)
-        ipc_emit_event(&wayland->wlip->ipc, IPC_EVENT_CLEARED);
-    else
-        ipc_emit_event(&wayland->wlip->ipc, IPC_EVENT_CURRENT, id, (int64_t)-1);
 
     wl_list_for_each(seat, &wayland->seats, link)
     {
@@ -572,7 +593,7 @@ selection_event_handler(
 
     if (id != -1)
     {
-        sel->seat->wayland->entry_id = id;
+        wayland_set_selection(seat->wayland, id, false);
         database_save_int_setting(
             &seat->wayland->wlip->database,
             "Last_entry",

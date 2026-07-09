@@ -19,6 +19,12 @@ enum database_transaction
 
 struct database_entry
 {
+    enum
+    {
+        DATABASE_ENTRY_NONE = 0,
+        DATABASE_ENTRY_STARRED = 1 << 0
+    } flags;
+
     int64_t id;
     int64_t creation_time; // In milliseconds
     int64_t update_time;   // In milliseconds
@@ -68,6 +74,7 @@ int database_init(struct database *db, const char *dir, struct wlip *wlip);
 void database_uninit(struct database *db);
 int database_do_transaction(struct database *db, enum database_transaction type);
 int64_t database_serialize_entry(struct database *db, struct database_entry *entry);
+int64_t database_update_entry(struct database *db, int64_t id);
 int database_serialize_mime_type(struct database *db, int64_t id, const char *mime_type, const uint8_t *data_id, uint8_t *data, size_t len);
 int database_offer_mime_types(struct database *db, int64_t id, struct ext_data_control_source_v1 *source);
 sqlite3_stmt *database_deserialize_mime_type_data(struct database *db, int64_t id, const char *mime_type);
@@ -76,7 +83,7 @@ int database_get_selection_hash(struct database *db, uint8_t *hash);
 int database_deserialize_entries(struct database *db, int64_t start, int64_t n, entry_func callback, void *udata);
 int database_deserialize_entry(struct database *db, int64_t idx, struct database_entry *entry);
 int database_deserialize_entry_id(struct database *db, int64_t id, struct database_entry *entry);
-void database_add_mime_types(struct database *db, int64_t id, struct json_object *obj);
+void database_add_mime_types_to_json(struct database *db, int64_t id, struct json_object *obj);
 bool database_id_exists(struct database *db, int64_t id);
 int database_save_int_setting(struct database *db, const char *key, int64_t val);
 int database_get_int_setting(struct database *db, const char *key, int64_t *val);

@@ -68,8 +68,6 @@ wlip_init(
             database_save_int_setting(&wlip->database, "Last_entry", id);
         }
 
-    wayland_set_selection(&wlip->wayland, id);
-
     return OK;
 }
 
@@ -230,12 +228,7 @@ exit:
         return -1;
 
     if (did_something)
-    {
-        ipc_emit_event(&wlip->ipc, IPC_EVENT_NEW, id, (int64_t)0);
-        ipc_emit_event(&wlip->ipc, IPC_EVENT_CURRENT, id, (int64_t)0);
-    }
-    else
-        ipc_emit_event(&wlip->ipc, IPC_EVENT_CLEARED);
+        ipc_emit_event(&wlip->ipc, IPC_EVENT_ADD, "i", IPC_ID, id);
 
     return did_something ? id : -1;
 }
