@@ -30,13 +30,13 @@ static void ipc_connection_queue_message(struct ipc_connection *ct, struct json_
 
 static void ipc_connection_error(struct ipc_connection *ct, int64_t serial, const char *desc);
 
-static void ipc_connection_handle_event_stream(struct ipc_connection *ct, int64_t serial, struct json_object *req);
-static void ipc_connection_handle_entry(struct ipc_connection *ct, int64_t serial, struct json_object *req);
-static void ipc_connection_handle_mimetype(struct ipc_connection *ct, int64_t serial, struct json_object *req);
-static void ipc_connection_handle_set(struct ipc_connection *ct, int64_t serial, struct json_object *req);
-static void ipc_connection_handle_delete(struct ipc_connection *ct, int64_t serial, struct json_object *req);
-static void ipc_connection_handle_history_size(struct ipc_connection *ct, int64_t serial, struct json_object *req);
-static void ipc_connection_handle_starred(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_listen_event_stream(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_get_entry(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_load_mimetype_data(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_set_entry(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_delete_entry(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_get_history_size(struct ipc_connection *ct, int64_t serial, struct json_object *req);
+static void ipc_connection_handle_set_starred(struct ipc_connection *ct, int64_t serial, struct json_object *req);
 // clang-format on
 
 #define REQUEST_HANDLER(name) {STRINGIFY(name), ipc_connection_handle_##name}
@@ -53,7 +53,7 @@ static struct request_handler
      * "enable": boolean
      * If events should be received
      */
-    REQUEST_HANDLER(event_stream),
+    REQUEST_HANDLER(listen_event_stream),
     /*
      * "entry" request:
      * Get info about an entry at a given position. Arguments:
@@ -74,7 +74,7 @@ static struct request_handler
      * "mime_types" const char *[]
      * Array of mime types for this entry
      */
-    REQUEST_HANDLER(entry),
+    REQUEST_HANDLER(get_entry),
     /*
      * "mimetype" request:
      * Get the contents of a mime type as a base64 encoded string. Arguments:
@@ -87,7 +87,7 @@ static struct request_handler
      * "data": const char *
      * Base64 encoded string of contents
      */
-    REQUEST_HANDLER(mimetype),
+    REQUEST_HANDLER(load_mimetype_data),
     /*
      * "set" request:
      * Set the current entry. Arguments:
@@ -96,7 +96,7 @@ static struct request_handler
      *
      * Return success response
      */
-    REQUEST_HANDLER(set),
+    REQUEST_HANDLER(set_entry),
     /*
      * "delete" request:
      * Delete a entry. Arguments:
@@ -105,7 +105,7 @@ static struct request_handler
      *
      * Return success response
      */
-    REQUEST_HANDLER(delete),
+    REQUEST_HANDLER(delete_entry),
     /*
      * "history_size" request:
      * Get number of entries in clipboard history.
@@ -114,7 +114,7 @@ static struct request_handler
      * "size": int64_t
      * Number of entries
      */
-    REQUEST_HANDLER(history_size),
+    REQUEST_HANDLER(get_history_size),
     /*
      * "starred" request:
      * Set starred state of entry. Arguments:
@@ -123,7 +123,7 @@ static struct request_handler
      * "starred": boolean
      * New starred state to use
      */
-    REQUEST_HANDLER(starred),
+    REQUEST_HANDLER(set_starred),
 };
 #undef REQUEST_HANDLER
 
@@ -579,7 +579,7 @@ ipc_connection_error(
 }
 
 static void
-ipc_connection_handle_event_stream(
+ipc_connection_handle_listen_event_stream(
     struct ipc_connection *ct, int64_t serial, struct json_object *req
 )
 {
@@ -596,7 +596,7 @@ ipc_connection_handle_event_stream(
 }
 
 static void
-ipc_connection_handle_entry(
+ipc_connection_handle_get_entry(
     struct ipc_connection *ct, int64_t serial, struct json_object *req
 )
 {
@@ -643,7 +643,7 @@ ipc_connection_handle_entry(
 }
 
 static void
-ipc_connection_handle_mimetype(
+ipc_connection_handle_load_mimetype_data(
     struct ipc_connection *ct, int64_t serial, struct json_object *req
 )
 {
@@ -692,7 +692,7 @@ exit:
 }
 
 static void
-ipc_connection_handle_set(
+ipc_connection_handle_set_entry(
     struct ipc_connection *ct, int64_t serial, struct json_object *req
 )
 {
@@ -718,7 +718,7 @@ ipc_connection_handle_set(
 }
 
 static void
-ipc_connection_handle_delete(
+ipc_connection_handle_delete_entry(
     struct ipc_connection *ct, int64_t serial, struct json_object *req
 )
 {
@@ -751,7 +751,7 @@ ipc_connection_handle_delete(
 }
 
 static void
-ipc_connection_handle_history_size(
+ipc_connection_handle_get_history_size(
     struct ipc_connection *ct, int64_t serial, struct json_object *req UNUSED
 )
 {
@@ -768,7 +768,7 @@ ipc_connection_handle_history_size(
 }
 
 static void
-ipc_connection_handle_starred(
+ipc_connection_handle_set_starred(
     struct ipc_connection *ct, int64_t serial, struct json_object *req
 )
 {

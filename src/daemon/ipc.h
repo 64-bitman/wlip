@@ -18,7 +18,7 @@
  * "id": int64_t
  * ID of entry that was added
  */
-#define IPC_EVENT_ADD "add"
+#define IPC_EVENT_ADD "entry_added"
 
 /*
  * Emitted when new entry is added to to start of history to become the most
@@ -28,7 +28,7 @@
  * "pos": int64_t
  * Position in history of entry before deletion
  */
-#define IPC_EVENT_DELETE "delete"
+#define IPC_EVENT_DELETE "entry_deleted"
 /*
  * Emitted when current entry is updated. Arguments:
  * "id": int64_t
@@ -37,7 +37,7 @@
  * If true, entry was set as the current entry, otherwise entry was unset as the
  * current entry.
  */
-#define IPC_EVENT_STATE "state"
+#define IPC_EVENT_STATE "current_state_updated"
 /*
  * Emitted when entry starred state or update time is changed. Arguments:
  * "id": int64_t
@@ -50,7 +50,7 @@
  * Either may be excluded (if it was not changed), but at least one argument
  * will be present.
  */
-#define IPC_EVENT_UPDATE "update"
+#define IPC_EVENT_UPDATE "entry_updated"
 
 struct ipc;
 struct wlip;
