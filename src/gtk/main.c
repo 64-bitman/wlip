@@ -1,5 +1,4 @@
 #include "wlipdaemon.h"
-#include "wliplist.h"
 #include "wlipshell.h"
 #include <glib-unix.h>
 #include <glib.h>
@@ -29,7 +28,7 @@ main(int argc G_GNUC_UNUSED, char **argv G_GNUC_UNUSED)
     }
 
     // Temporary
-    g_log_set_debug_enabled(TRUE);
+    /* g_log_set_debug_enabled(TRUE); */
 
     g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
 
@@ -41,8 +40,9 @@ main(int argc G_GNUC_UNUSED, char **argv G_GNUC_UNUSED)
     gtk_init();
 
     g_autoptr(WlipDaemon) daemon = wlip_daemon_new(NULL, NULL);
-    g_autoptr(WlipList) list = wlip_list_new(daemon);
-    g_autoptr(WlipShell) shell = wlip_shell_new(daemon, list);
+    g_autoptr(WlipShell) shell = wlip_shell_new(daemon);
+
+    g_autoptr(WlipEntry) entry = wlip_daemon_get_entry(daemon, 0);
 
     g_main_loop_run(loop);
 

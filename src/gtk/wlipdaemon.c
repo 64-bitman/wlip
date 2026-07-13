@@ -3,6 +3,154 @@
 #include <glib.h>
 #include <json-glib/json-glib.h>
 
+G_DEFINE_ENUM_TYPE(
+    WlipContent,
+    wlip_content,
+    G_DEFINE_ENUM_VALUE(WLIP_CONTENT_IMAGE, "image"),
+    G_DEFINE_ENUM_VALUE(WLIP_CONTENT_TEXT, "text"),
+    G_DEFINE_ENUM_VALUE(WLIP_CONTENT_BINARY, "binary"),
+    G_DEFINE_ENUM_VALUE(WLIP_CONTENT_UNKNOWN, "unknown")
+)
+
+struct _WlipEntry
+{
+    GObject parent;
+
+    int64_t id; // -1 if entry is not loaded
+
+    int64_t creation_time;
+    int64_t update_time;
+
+    gboolean starred;
+    gboolean current;
+
+    // Content that represents this clipboard entry.
+    WlipContent content;
+    GBytes     *content_data; // NULL if binary or unknown
+    WlipContent pending_content;
+
+    // Maps mime type to GBytes object (or NULL if not loaded).
+    GHashTable *mime_types;
+};
+
+G_DEFINE_TYPE(WlipEntry, wlip_entry, G_TYPE_OBJECT)
+
+typedef enum
+{
+    ENTRY_PROP_CREATION_TIME = 1,
+    ENTRY_PROP_UPDATE_TIME,
+    ENTRY_PROP_STARRED,
+    ENTRY_PROP_CURRENT,
+    ENTRY_PROP_CONTENT,
+    N_ENTRY_PROPS
+} WlipEntryProperty;
+
+static GParamSpec *entry_props[N_ENTRY_PROPS] = {NULL};
+
+typedef enum
+{
+    ENTRY_SIGNAL_READY,
+    N_ENTRY_SIGNALS
+} WlipEntrySignal;
+
+static guint entry_signals[N_ENTRY_SIGNALS] = {0};
+
+static const char *content_map[] = {
+    [WLIP_CONTENT_IMAGE] = "image/*",
+    [WLIP_CONTENT_TEXT] = "text/*",
+    [WLIP_CONTENT_BINARY] = "*"
+};
+
+static void
+wlip_entry_finalize(GObject *obj)
+{
+    WlipEntry *self = WLIP_ENTRY(obj);
+
+    g_hash_table_unref(self->mime_types);
+    g_bytes_unref(self->content_data);
+
+    G_OBJECT_CLASS(wlip_entry_parent_class)->finalize(obj);
+}
+
+static void
+wlip_entry_class_init(WlipEntryClass *class)
+{
+    GObjectClass *obj_class = G_OBJECT_CLASS(class);
+
+    obj_class->finalize = wlip_entry_finalize;
+
+    entry_props[ENTRY_PROP_CREATION_TIME] = g_param_spec_int64(
+        "creation-time",
+        NULL,
+        NULL,
+        0,
+        G_MAXINT64,
+        0,
+        G_PARAM_READABLE | G_PARAM_STATIC_STRINGS
+    );
+    entry_props[ENTRY_PROP_UPDATE_TIME] = g_param_spec_int64(
+        "update-time",
+        NULL,
+        NULL,
+        0,
+        G_MAXINT64,
+        0,
+        G_PARAM_READABLE | G_PARAM_STATIC_STRINGS
+    );
+    entry_props[ENTRY_PROP_STARRED] = g_param_spec_boolean(
+        "starred", NULL, NULL, FALSE, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS
+    );
+    entry_props[ENTRY_PROP_CURRENT] = g_param_spec_boolean(
+        "current", NULL, NULL, FALSE, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS
+    );
+    entry_props[ENTRY_PROP_CONTENT] = g_param_spec_enum(
+        "current",
+        NULL,
+        NULL,
+        WLIP_TYPE_CONTENT,
+        WLIP_CONTENT_UNKNOWN,
+        G_PARAM_READABLE | G_PARAM_STATIC_STRINGS
+    );
+
+    entry_signals[ENTRY_SIGNAL_READY] = g_signal_new(
+        "ready",
+        G_TYPE_FROM_CLASS(class),
+        G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+        0,
+        NULL,
+        NULL,
+        NULL,
+        G_TYPE_NONE,
+        0
+    );
+}
+
+static void
+wlip_entry_init(WlipEntry *self)
+{
+    self->id = -1;
+    self->content = WLIP_CONTENT_UNKNOWN;
+    self->mime_types = g_hash_table_new_full(
+        g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_bytes_unref
+    );
+}
+
+static WlipEntry *
+wlip_entry_new(void)
+{
+    return g_object_new(WLIP_TYPE_ENTRY, NULL);
+}
+
+#define REQUEST_LISTEN_EVENT_STREAM "listen_event_stream"
+#define REQUEST_GET_ENTRY "get_entry"
+#define REQUEST_LOAD_MIMETYPE_DATA "load_mimetype_data"
+#define REQUEST_GET_HISTORY_SIZE "get_history_size"
+
+#define EVENT_ENTRY_ADDED "entry_added"
+#define EVENT_ENTRY_DELETED "entry_deleted"
+#define EVENT_CURRENT_STATE_UPDATED "current_state_updated"
+#define EVENT_ENTRY_UPDATED "entry_updated"
+
 /*
  * Object that represents the connection to the wlip daemon. IPC stuff runs on a
  * separate thread.
@@ -11,19 +159,33 @@ struct _WlipDaemon
 {
     GObject parent;
 
-    char         *socket_path;
-    GCancellable *cancel; // Used to stop IPC thread
-    GThread      *ipc_thread;
+    char *socket_path;
 
-    GAsyncQueue *write_queue; // Queue of GBytes to send
+    guint serial;
 
-    // Table of pending requests that have been sent. Maps request serial to the
-    // GTask object.
+    // Used to wakeup IPC thread when reading or writing. Accessed by main
+    // thread and worker thread.
+    GCancellable *cancel;
+
+    GThread *ipc_thread;
+
+    // Maps serial to GTask
     GHashTable *pending;
-    int64_t     serial_gen;
 
-    // Used to signal write thread to stop
-    GBytes *sentinel;
+    // Queue of GBytes to write
+    GAsyncQueue *write_queue;
+
+    // Queue of JsonNode objects
+    GAsyncQueue *event_queue;
+    guint        event_idle;
+
+    // If > 0, then exit IPC thread
+    int stop;
+
+    guint n_entries;
+    // Maps entry ID to WlipEntry object. Note that a weak reference is held on
+    // the object. Modified and accessed only by main thread.
+    GHashTable *entries;
 };
 
 // clang-format off
@@ -34,17 +196,14 @@ G_DEFINE_TYPE(WlipDaemon, wlip_daemon, G_TYPE_OBJECT)
 
 typedef enum
 {
-    SIGNAL_EVENT,
-    N_SIGNALS
-} WlipDaemonSignals;
+    DAEMON_SIGNAL_READY,  // When daemon is ready to be used
+    DAEMON_SIGNAL_ADD,    // "add" event
+    DAEMON_SIGNAL_DELETE, // "delete" event, has one argument which is the
+                          // position that was deleted.
+    N_DAEMON_SIGNALS
+} WlipDaemonSignal;
 
-static guint SIGNALS[N_SIGNALS] = {0};
-
-static const char *REQUEST_NAMES[N_WLIP_DAEMON_REQUESTS] = {
-    [WLIP_DAEMON_REQUEST_ENTRY] = "entry",
-    [WLIP_DAEMON_REQUEST_EVENT_STREAM] = "event_stream",
-    [WLIP_DAEMON_REQUEST_HISTORY_SIZE] = "history_size"
-};
+static guint daemon_signals[N_DAEMON_SIGNALS] = {0};
 
 static void
 wlip_daemon_finalize(GObject *obj)
@@ -52,9 +211,10 @@ wlip_daemon_finalize(GObject *obj)
     WlipDaemon *self = WLIP_DAEMON(obj);
 
     g_free(self->socket_path);
-    g_async_queue_unref(self->write_queue);
     g_hash_table_unref(self->pending);
-    g_bytes_unref(self->sentinel);
+    g_async_queue_unref(self->write_queue);
+    g_async_queue_unref(self->event_queue);
+    g_hash_table_unref(self->entries);
 
     G_OBJECT_CLASS(wlip_daemon_parent_class)->finalize(obj);
 }
@@ -64,7 +224,15 @@ wlip_daemon_dispose(GObject *obj)
 {
     WlipDaemon *self = WLIP_DAEMON(obj);
 
-    wlip_daemon_stop(self);
+    // Stop the IPC thread
+    if (self->ipc_thread != NULL)
+    {
+        g_atomic_int_inc(&self->stop);
+        g_cancellable_cancel(self->cancel);
+        (void)g_thread_join(self->ipc_thread);
+        self->ipc_thread = NULL;
+    }
+
     g_clear_object(&self->cancel);
 
     G_OBJECT_CLASS(wlip_daemon_parent_class)->dispose(obj);
@@ -78,8 +246,30 @@ wlip_daemon_class_init(WlipDaemonClass *class)
     obj_class->finalize = wlip_daemon_finalize;
     obj_class->dispose = wlip_daemon_dispose;
 
-    SIGNALS[SIGNAL_EVENT] = g_signal_new(
-        "event",
+    daemon_signals[DAEMON_SIGNAL_READY] = g_signal_new(
+        "ready",
+        G_TYPE_FROM_CLASS(class),
+        G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+        0,
+        NULL,
+        NULL,
+        NULL,
+        G_TYPE_NONE,
+        0
+    );
+    daemon_signals[DAEMON_SIGNAL_ADD] = g_signal_new(
+        "add",
+        G_TYPE_FROM_CLASS(class),
+        G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+        0,
+        NULL,
+        NULL,
+        NULL,
+        G_TYPE_NONE,
+        0
+    );
+    daemon_signals[DAEMON_SIGNAL_DELETE] = g_signal_new(
+        "delete",
         G_TYPE_FROM_CLASS(class),
         G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
         0,
@@ -88,7 +278,7 @@ wlip_daemon_class_init(WlipDaemonClass *class)
         NULL,
         G_TYPE_NONE,
         1,
-        JSON_TYPE_OBJECT
+        G_TYPE_UINT
     );
 }
 
@@ -96,13 +286,15 @@ static void
 wlip_daemon_init(WlipDaemon *self)
 {
     self->cancel = g_cancellable_new();
-    self->pending = g_hash_table_new_full(
-        g_int64_hash, g_int64_equal, g_free, g_object_unref
-    );
-    self->write_queue = g_async_queue_new_full((GDestroyNotify)g_bytes_unref);
 
-    char c = 1;
-    self->sentinel = g_bytes_new(&c, sizeof(c));
+    self->pending =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+
+    self->write_queue = g_async_queue_new_full((GDestroyNotify)g_bytes_unref);
+    self->event_queue = g_async_queue_new_full((GDestroyNotify)json_node_unref);
+
+    self->entries =
+        g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
 }
 
 /*
@@ -145,243 +337,428 @@ wlip_daemon_new(const char *socket_path, GError **error)
 }
 
 /*
- * Stop the IPC thread for this object. Should always be called before the
- * object is not needed anymore (or else object will leak).
+ * Return number of entries in history. If daemon is not ready yet, then zero is
+ * returned.
  */
-void
-wlip_daemon_stop(WlipDaemon *self)
+guint
+wlip_daemon_get_history_size(WlipDaemon *self)
 {
-    if (self->ipc_thread == NULL)
-        return;
+    g_assert(WLIP_IS_DAEMON(self));
 
-    if (self->cancel != NULL)
-        g_cancellable_cancel(self->cancel);
-
-    g_debug("Closing IPC connection");
-    g_thread_join(self->ipc_thread);
-    self->ipc_thread = NULL;
+    return self->n_entries;
 }
 
 /*
- * Send a request to the daemon asynchronously. The variadic arguments depend on
- * "req":
+ * Generic function to send a request to the daemon, creating a new GTask. The
+ * variadic arguments are in the format of <member name>, <value>. "fmt" is a
+ * string of types that each <value> represents:
  *
- * WLIP_DAEMON_REQUEST_ENTRY: "int64_t pos"
+ * "s": const char * (note that no escaping is done for the JSON string!!)
+ * "i": int64_t
+ * "b": gboolean
  *
- * WLIP_DAEMON_REQUEST_EVENT_STREAM: "gboolean enable"
- *
- * WLIP_DAEMON_REQUEST_HISTORY_SIZE: no args
+ * If "fmt" is NULL, then no arguments are expected.
  */
-void
-wlip_daemon_request_async(
+static void
+wlip_daemon_send_request_async(
     WlipDaemon         *self,
-    WlipDaemonRequest   req,
-    int                 io_priority,
-    GCancellable       *cancellable,
+    const char         *type,
+    const char         *fmt,
     GAsyncReadyCallback callback,
     void               *udata,
     ...
 )
 {
-    g_assert(WLIP_IS_DAEMON(self));
-    g_assert(cancellable == NULL || G_IS_CANCELLABLE(cancellable));
+    guint    serial = self->serial++;
+    GString *msg = g_string_new(NULL);
 
-    int64_t  serial = self->serial_gen++;
-    GString *str = g_string_new(NULL);
-    va_list  ap;
+    g_string_append_printf(msg, "{\"type\":\"%s\",\"serial\":%u", type, serial);
 
-    g_string_append_printf(
-        str,
-        "{\"type\":\"%s\",\"serial\":%" G_GINT64_FORMAT,
-        REQUEST_NAMES[req],
-        serial
-    );
-
-    va_start(ap, udata);
-
-    switch (req)
+    if (fmt != NULL)
     {
-    case WLIP_DAEMON_REQUEST_ENTRY:
-        g_string_append_printf(
-            str, ",\"pos\":%" G_GINT64_FORMAT, va_arg(ap, int64_t)
-        );
-        break;
-    case WLIP_DAEMON_REQUEST_EVENT_STREAM:
-        g_string_append_printf(
-            str, ",\"enable\":%s", va_arg(ap, gboolean) ? "true" : "false"
-        );
-        break;
-    case WLIP_DAEMON_REQUEST_HISTORY_SIZE:
-        break;
-    default:
-        g_assert_not_reached();
+        va_list ap;
+
+        va_start(ap, udata);
+        for (const char *c = fmt; *c != 0; c++)
+        {
+            const char *name = va_arg(ap, const char *);
+
+            g_string_append_printf(msg, ",\"%s\":", name);
+            switch (*c)
+            {
+            case 's':
+                g_string_append_printf(msg, "\"%s\"", va_arg(ap, const char *));
+                break;
+            case 'i':
+                g_string_append_printf(
+                    msg, "%" G_GINT64_FORMAT, va_arg(ap, int64_t)
+                );
+                break;
+            case 'b':
+                g_string_append_printf(
+                    msg, "%s", va_arg(ap, int) ? "true" : "false"
+                );
+                break;
+            default:
+                g_assert_not_reached();
+            }
+        }
+        va_end(ap);
     }
+    g_string_append(msg, "}\n");
 
-    va_end(ap);
-    g_string_append(str, "}\n");
-    g_async_queue_push(self->write_queue, g_string_free_to_bytes(str));
+    GBytes *bytes = g_string_free_to_bytes(msg);
+    GTask  *task = g_task_new(self, NULL, callback, udata);
 
-    GTask *task = g_task_new(self, cancellable, callback, udata);
+    g_task_set_source_tag(task, wlip_daemon_send_request_async);
+    g_task_set_priority(task, G_PRIORITY_LOW);
 
-    g_task_set_priority(task, io_priority);
-    g_task_set_source_tag(task, wlip_daemon_request_async);
-
-    int64_t *serial_buf = g_new(int64_t, 1);
-    *serial_buf = serial;
-
-    g_hash_table_insert(self->pending, serial_buf, task);
+    g_hash_table_insert(self->pending, GUINT_TO_POINTER(serial), task);
+    g_async_queue_push(self->write_queue, bytes);
+    g_cancellable_cancel(self->cancel);
 }
 
-JsonObject *
-wlip_daemon_request_finish(
+static JsonObject *
+wlip_daemon_send_request_finish(
     WlipDaemon *self, GAsyncResult *result, GError **error
 )
 {
     g_assert(WLIP_IS_DAEMON(self));
     g_assert(G_IS_TASK(result));
     g_assert(error == NULL || *error == NULL);
-    return g_task_propagate_pointer(G_TASK(result), error);
+
+    g_autoptr(JsonNode) node = g_task_propagate_pointer(G_TASK(result), error);
+
+    if (node == NULL)
+        return NULL;
+
+    return json_object_ref(json_node_get_object(node));
 }
 
-typedef struct
+static void
+entry_weak_cb(WlipDaemon *daemon, WlipEntry *entry)
 {
-    GOutputStream *stream;
-    GCancellable  *cancel;
-    GAsyncQueue   *queue;
-    GBytes        *sentinel;
-} WriteThreadData;
+    WlipEntry *existing = g_hash_table_lookup(daemon->entries, &entry->id);
 
-static void *
-wlip_daemon_write_thread_cb(WriteThreadData *data)
+    // May happen if entry is still referenced after being removed from table.
+    if (existing == entry)
+        g_hash_table_remove(daemon->entries, &entry->id);
+    g_object_unref(daemon);
+}
+
+static void
+mimetype_cb(WlipDaemon *daemon, GAsyncResult *result, GWeakRef *ref)
 {
-    GOutputStream *stream = data->stream;
-    GCancellable  *cancel = data->cancel;
-    GAsyncQueue   *queue = data->queue;
-    GBytes        *sentinel = data->sentinel;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) resp =
+        wlip_daemon_send_request_finish(daemon, result, &error);
+    g_autoptr(WlipEntry) entry = g_weak_ref_get(ref);
 
-    g_free(data);
+    g_weak_ref_clear(ref);
+    g_free(ref);
 
-    while (TRUE)
+    if (resp == NULL)
     {
-        g_autoptr(GError) error = NULL;
-        g_autoptr(GBytes) bytes = g_async_queue_pop(queue);
+        g_warning("Error loading mime type: %s", error->message);
+        return;
+    }
+    if (entry == NULL)
+        return;
 
-        if (bytes == sentinel)
-            // Stop thread
-            break;
+    const char *b64 =
+        json_object_get_string_member_with_default(resp, "data", "");
 
-        size_t         sz;
-        const uint8_t *stuff = g_bytes_get_data(bytes, &sz);
+    size_t   datasz;
+    uint8_t *data = g_base64_decode(b64, &datasz);
+    GBytes  *bytes = g_bytes_new_take(data, datasz);
 
-        if (sz < G_MAXINT)
-            // Don't include newline
-            g_debug("Sending request to daemon: \"%.*s\"", (int)sz - 1, stuff);
+    entry->content = entry->pending_content;
+    entry->content_data = bytes;
 
-        if (!g_output_stream_write_all(stream, stuff, sz, NULL, cancel, &error))
+    g_object_notify_by_pspec(G_OBJECT(entry), entry_props[ENTRY_PROP_CONTENT]);
+}
+
+static void
+entry_cb(WlipDaemon *daemon, GAsyncResult *result, GWeakRef *ref)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) resp =
+        wlip_daemon_send_request_finish(daemon, result, &error);
+    g_autoptr(WlipEntry) entry = g_weak_ref_get(ref);
+    gboolean need_ref = FALSE;
+
+    if (resp == NULL)
+    {
+        g_warning("Error loading entry: %s", error->message);
+        goto exit;
+    }
+    if (entry == NULL)
+        goto exit;
+
+    entry->id = json_object_get_int_member_with_default(resp, "id", -1);
+    if (entry->id == -1)
+        goto exit;
+    entry->creation_time =
+        json_object_get_int_member_with_default(resp, "creation_time", -1);
+    if (entry->creation_time == -1)
+        goto exit;
+    entry->update_time =
+        json_object_get_int_member_with_default(resp, "update_time", -1);
+    if (entry->update_time == -1)
+        goto exit;
+
+    entry->starred =
+        json_object_get_boolean_member_with_default(resp, "starred", FALSE);
+    entry->current =
+        json_object_get_boolean_member_with_default(resp, "current", FALSE);
+
+    if (json_object_has_member(resp, "mime_types") &&
+        JSON_NODE_HOLDS_ARRAY(json_object_get_member(resp, "mime_types")))
+    {
+        JsonArray *mime_types =
+            json_object_get_array_member(resp, "mime_types");
+        WlipContent content = WLIP_CONTENT_BINARY;
+        const char *content_mime_type = NULL;
+
+        // Add mime types to table. Also find the representing content, and send
+        // a request to load the data for it. Only emit the notify signal for
+        // "content" property when we receive the content data.
+        for (guint i = 0; i < json_array_get_length(mime_types); i++)
         {
-            if (error->code != G_IO_ERROR_CANCELLED)
-                g_critical(
-                    "Error writing to daemon socket: %s", error->message
-                );
-            break;
+            const char *mime_type =
+                json_array_get_string_element(mime_types, i);
+
+            if (mime_type == NULL)
+                continue;
+
+            g_hash_table_insert(entry->mime_types, g_strdup(mime_type), NULL);
+
+            for (WlipContent t = 0; t < content; t++)
+                if (g_content_type_is_a(mime_type, content_map[t]))
+                {
+                    content = t;
+                    content_mime_type = mime_type;
+                    break;
+                }
+        }
+
+        if (content == WLIP_CONTENT_BINARY)
+        {
+            entry->content = WLIP_CONTENT_BINARY;
+            g_object_notify_by_pspec(
+                G_OBJECT(entry), entry_props[ENTRY_PROP_CONTENT]
+            );
+        }
+        else
+        {
+            g_assert(content_mime_type != NULL);
+            entry->pending_content = content;
+            need_ref = TRUE;
+            wlip_daemon_send_request_async(
+                daemon,
+                REQUEST_LOAD_MIMETYPE_DATA,
+                "is",
+                (GAsyncReadyCallback)mimetype_cb,
+                ref,
+                "id",
+                entry->id,
+                "mime_type",
+                content_mime_type
+            );
         }
     }
 
-    return NULL;
-}
+    int64_t *idvar = g_new(int64_t, 1);
 
-typedef struct
-{
-    WlipDaemon *daemon;
-    JsonNode   *msg;
-} ReadThreadData;
+    *idvar = entry->id;
 
-static void
-read_thread_data_free(ReadThreadData *data)
-{
-    g_object_unref(data->daemon);
-    json_node_unref(data->msg);
-    g_free(data);
+    g_object_weak_ref(
+        G_OBJECT(entry), (GWeakNotify)entry_weak_cb, g_object_ref(daemon)
+    );
+    g_hash_table_insert(daemon->entries, idvar, entry);
+
+    for (int i = ENTRY_PROP_CREATION_TIME; i < ENTRY_PROP_CONTENT; i++)
+        g_object_notify_by_pspec(G_OBJECT(entry), entry_props[i]);
+
+    g_signal_emit(entry, entry_signals[ENTRY_SIGNAL_READY], 0);
+exit:
+    if (!need_ref)
+    {
+        g_weak_ref_clear(ref);
+        g_free(ref);
+    }
 }
 
 /*
- * Called when a message has been read from the daemon. Technically we can
- * finish the task in the worker thread instead of using an idle callback, but
- * we need an idle callback for events (to emit signals).
+ * Return an entry at the given position, that is initially unloaded.
  */
-static gboolean
-wlip_daemon_received_cb(ReadThreadData *data)
+WlipEntry *
+wlip_daemon_get_entry(WlipDaemon *self, guint pos)
 {
-    WlipDaemon *self = data->daemon;
-    JsonNode   *msg = data->msg;
-    JsonObject *obj;
+    g_assert(WLIP_IS_DAEMON(self));
+
+    WlipEntry *entry = wlip_entry_new();
+    GWeakRef  *ref = g_new(GWeakRef, 1);
+
+    // Use a weak ref in case entry is disposed
+    g_weak_ref_init(ref, entry);
+    wlip_daemon_send_request_async(
+        self,
+        REQUEST_GET_ENTRY,
+        "i",
+        (GAsyncReadyCallback)entry_cb,
+        ref,
+        "pos",
+        pos
+    );
+
+    return entry;
+}
+
+static void
+wlip_daemon_process_event(WlipDaemon *self, JsonObject *event)
+{
+    const char *eventtype =
+        json_object_get_string_member_with_default(event, "event", NULL);
+
+    if (eventtype == NULL)
+        return;
+
+    if (strcmp(eventtype, EVENT_ENTRY_ADDED) == 0)
+    {
+        g_signal_emit(self, daemon_signals[DAEMON_SIGNAL_ADD], 0);
+    }
+    else if (strcmp(eventtype, EVENT_ENTRY_DELETED) == 0)
+    {
+        int64_t id = json_object_get_int_member_with_default(event, "id", 0);
+        guint   pos = json_object_get_int_member_with_default(event, "pos", 0);
+
+        g_hash_table_remove(self->entries, &id);
+        g_signal_emit(self, daemon_signals[DAEMON_SIGNAL_DELETE], 0, pos);
+    }
+    else if (strcmp(eventtype, EVENT_CURRENT_STATE_UPDATED) == 0)
+    {
+    }
+    else if (strcmp(eventtype, EVENT_ENTRY_UPDATED) == 0)
+    {
+    }
+}
+
+static gboolean
+process_events_cb(WlipDaemon *daemon)
+{
+    while (TRUE)
+    {
+        g_autoptr(JsonNode) node = g_async_queue_try_pop(daemon->event_queue);
+
+        if (node == NULL)
+            break;
+
+        wlip_daemon_process_event(daemon, json_node_get_object(node));
+    }
+
+    daemon->event_idle = 0;
+    g_object_unref(daemon);
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Handle an IPC message from the daemon. Takes ownership of "node" (which
+ * should always be a JSON object and not be referenced anywhere else other than
+ * the caller once).
+ */
+static void
+wlip_daemon_handle_message(WlipDaemon *self, JsonNode *node)
+{
+    JsonObject *msg = json_node_get_object(node);
     const char *type;
-    int64_t     serial;
 
-    if (!JSON_NODE_HOLDS_OBJECT(msg))
-        goto exit;
-    obj = json_node_get_object(msg);
-
-    type = json_object_get_string_member_with_default(obj, "type", NULL);
+    type = json_object_get_string_member_with_default(msg, "type", NULL);
     if (type == NULL)
-        goto exit;
+        goto fail;
 
     if (strcmp(type, "event") == 0)
     {
-        g_signal_emit(self, SIGNALS[SIGNAL_EVENT], 0, obj);
-        goto exit;
+        g_async_queue_push(self->event_queue, node);
+        if (self->event_idle == 0)
+            g_idle_add((GSourceFunc)process_events_cb, g_object_ref(self));
+        return;
     }
 
-    serial = json_object_get_int_member_with_default(obj, "serial", -1);
-    if (serial == -1)
-        goto exit;
+    guint serial = json_object_get_int_member_with_default(msg, "serial", 0);
 
-    // Find GTask and finish it
-    int64_t *serial_buf = NULL;
-    GTask   *task = NULL;
+    GTask *task = g_hash_table_lookup(self->pending, GUINT_TO_POINTER(serial));
 
-    g_hash_table_steal_extended(
-        self->pending, &serial, (void **)&serial_buf, (void **)&task
-    );
-    g_free(serial_buf);
+    g_hash_table_steal(self->pending, GUINT_TO_POINTER(serial));
 
     if (task == NULL)
     {
-        g_warning(
-            "Pending message with serial %" G_GINT64_FORMAT " does not exist",
-            serial
-        );
-        goto exit;
+        g_warning("Unknown response with serial %u", serial);
+        goto fail;
     }
 
-    if (g_task_return_error_if_cancelled(task))
+    // We have to to transfer full ownership of the JSON node, because JsonNode
+    // is not thread safe (including reference counting).
+    if (strcmp(type, "response") == 0)
     {
-    }
-    else if (strcmp(type, "response") == 0 || strcmp(type, "success") == 0)
-    {
-        g_task_return_pointer(
-            task, json_object_ref(obj), (GDestroyNotify)json_object_unref
-        );
+        g_task_return_pointer(task, node, (GDestroyNotify)json_node_unref);
     }
     else if (strcmp(type, "error") == 0)
     {
-        const char *err = json_object_get_string_member_with_default(
-            obj, "desc", "(Unknown)"
+        const char *desc = json_object_get_string_member_with_default(
+            msg, "desc", "(unknown)"
         );
+
         g_task_return_new_error(
-            task, G_IO_ERROR, G_IO_ERROR_FAILED_HANDLED, "%s", err
+            task, G_IO_ERROR, G_IO_ERROR_FAILED_HANDLED, "%s", desc
         );
     }
     else
-        g_task_return_new_error_literal(
-            task, G_IO_ERROR, G_IO_ERROR_UNKNOWN, "Unknown message type"
+        g_task_return_new_error(
+            task,
+            G_IO_ERROR,
+            G_IO_ERROR_UNKNOWN,
+            "Unknown message type \"%s\"",
+            type
         );
 
     g_object_unref(task);
 
-exit:
-    // GSource destroy func will free "data"
-    return G_SOURCE_REMOVE;
+    return;
+fail:
+    json_node_unref(node);
+}
+
+static void
+history_size_cb(
+    WlipDaemon *daemon, GAsyncResult *result, void *udata G_GNUC_UNUSED
+)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonObject) resp =
+        wlip_daemon_send_request_finish(daemon, result, &error);
+
+    if (resp == NULL)
+    {
+        g_warning("Error getting history size: %s", error->message);
+        return;
+    }
+
+    int64_t size = json_object_get_int_member_with_default(resp, "size", -1);
+
+    size = MIN(size, G_MAXUINT);
+
+    if (size >= 0)
+    {
+        // Start receiving events
+        wlip_daemon_send_request_async(
+            daemon, REQUEST_LISTEN_EVENT_STREAM, "b", NULL, NULL, "enable", TRUE
+        );
+
+        daemon->n_entries = (guint)size;
+
+        g_signal_emit(daemon, daemon_signals[DAEMON_SIGNAL_READY], 0);
+    }
 }
 
 static void *
@@ -402,104 +779,91 @@ wlip_daemon_thread_cb(WlipDaemon *self)
         return NULL;
     }
 
-    WriteThreadData *write_data = g_new(WriteThreadData, 1);
+    g_autoptr(GDataInputStream) in_stream = NULL;
+    GOutputStream *out_stream;
 
-    write_data->stream = g_io_stream_get_output_stream(G_IO_STREAM(ct));
-    write_data->cancel = self->cancel;
-    write_data->queue = self->write_queue;
-    write_data->sentinel = self->sentinel;
+    in_stream =
+        g_data_input_stream_new(g_io_stream_get_input_stream(G_IO_STREAM(ct)));
+    out_stream = g_io_stream_get_output_stream(G_IO_STREAM(ct));
 
-    // Start write thread
-    GThread *write_thread = g_thread_new(
-        "IPC write worker", (GThreadFunc)wlip_daemon_write_thread_cb, write_data
+    g_data_input_stream_set_byte_order(
+        in_stream, G_DATA_STREAM_BYTE_ORDER_HOST_ENDIAN
+    );
+    g_data_input_stream_set_newline_type(
+        in_stream, G_DATA_STREAM_NEWLINE_TYPE_LF
     );
 
-    // Synchronously read from the input socket
+    // Get initial history size, when that is received, then the daemon object
+    // is considered ready.
+    wlip_daemon_send_request_async(
+        self,
+        REQUEST_GET_HISTORY_SIZE,
+        NULL,
+        (GAsyncReadyCallback)history_size_cb,
+        NULL
+    );
+
     g_autoptr(JsonParser) parser = json_parser_new_immutable();
-    g_autoptr(GByteArray) arr = g_byte_array_new();
 
-    GInputStream *stream = g_io_stream_get_input_stream(G_IO_STREAM(ct));
-    uint8_t       buf[4096];
-
+    // Main blocking object is the input stream. When the write buffer is
+    // updated, the GCancellable is cancelled, making the input stream read
+    // stop.
     while (TRUE)
     {
-        ssize_t r =
-            g_input_stream_read(stream, buf, sizeof(buf), self->cancel, &error);
-
-        if (r == -1)
-        {
-            if (error->code != G_IO_ERROR_CANCELLED)
-                g_critical("Error reading daemon socket: %s", error->message);
+        if (g_atomic_int_get(&self->stop) > 0)
             break;
-        }
-        else if (r == 0)
-            // EOF, just stop the loop
-            break;
-
-        // Check if there is a newline in "buf", if there is, then calculate the
-        // offset of the newline + the current length of the array to get the
-        // total length to parse. Do this until there are no more newlines
-        // found.
-        const uint8_t *ptr = buf;
 
         while (TRUE)
         {
-            const uint8_t *nl = memchr(ptr, '\n', r);
+            g_autoptr(GBytes) bytes = g_async_queue_try_pop(self->write_queue);
 
-            if (nl == NULL)
-                // Wait for more data
+            if (bytes == NULL)
                 break;
 
-            size_t off = nl - ptr;
-            size_t total_len = (size_t)arr->len + off;
+            gboolean       ret;
+            size_t         sz;
+            const uint8_t *data = g_bytes_get_data(bytes, &sz);
 
-            g_byte_array_append(arr, ptr, off);
+            ret = g_output_stream_write_all(
+                out_stream, data, sz, NULL, self->cancel, NULL
+            );
 
-            if (total_len < G_MAXINT)
-                g_debug(
-                    "Received message: \"%.*s\"", (int)total_len, arr->data
-                );
-
-            // If an error occurs parsing, then just ignore the parsed data.
-            if (json_parser_load_from_data(
-                    parser, (char *)arr->data, total_len, &error
-                ))
+            if (!ret)
             {
-                ReadThreadData *data = g_new(ReadThreadData, 1);
-
-                data->daemon = g_object_ref(self);
-                data->msg = json_parser_steal_root(parser);
-
-                g_main_context_invoke_full(
-                    NULL,
-                    G_PRIORITY_LOW,
-                    (GSourceFunc)wlip_daemon_received_cb,
-                    data,
-                    (GDestroyNotify)read_thread_data_free
-                );
+                g_cancellable_reset(self->cancel);
+                continue;
             }
-            g_clear_error(&error);
-
-            g_byte_array_set_size(arr, 0);
-            ptr = nl + 1;
-            r -= off + 1;
         }
 
-        // Append rest into buffer
-        if (r > 0)
+        size_t len;
+
+        while (TRUE)
         {
-            // If array size is over 64 MiB, abandon everything
-            if (arr->len + r > 64 * 1024 * 1024)
+            g_autofree char *str = g_data_input_stream_read_line_utf8(
+                in_stream, &len, self->cancel, NULL
+            );
+
+            if (str == NULL)
             {
-                g_warning("Read buffer has grown too large!");
-                g_byte_array_set_size(arr, 0);
+                g_cancellable_reset(self->cancel);
+                break;
             }
-            else
-                g_byte_array_append(arr, ptr, r);
+
+            // Ignore message if larger than 16 MB
+            if (len > 16000000)
+                continue;
+
+            if (json_parser_load_from_data(parser, str, len, NULL))
+            {
+                JsonNode *msg = json_parser_steal_root(parser);
+
+                if (JSON_NODE_HOLDS_OBJECT(msg))
+                    wlip_daemon_handle_message(self, msg);
+                else
+                    json_node_unref(msg);
+            }
         }
     }
 
-    g_async_queue_push(self->write_queue, g_bytes_ref(self->sentinel));
-    g_thread_join(write_thread);
     return NULL;
 }

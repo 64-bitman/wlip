@@ -1,7 +1,5 @@
 #include "wlipshell.h"
 #include "wlipdaemon.h"
-#include "wliplist.h"
-#include "wlipview.h"
 #include <gtk/gtk.h>
 #include <gtk4-layer-shell.h>
 
@@ -10,7 +8,6 @@ struct _WlipShell
     GObject parent;
 
     WlipDaemon *daemon;
-    WlipList   *list;
     GtkWidget  *win;
 
     GtkWidget *vbox;      // Vertical box that holds everything
@@ -28,8 +25,11 @@ wlip_shell_dispose(GObject *obj)
     WlipShell *self = WLIP_SHELL(obj);
 
     g_clear_object(&self->daemon);
-    g_clear_object(&self->list);
-    g_clear_pointer((GtkWindow **)&self->win, gtk_window_destroy);
+    if (self->win != NULL)
+    {
+        gtk_window_destroy(GTK_WINDOW(self->win));
+        self->win = NULL;
+    }
 
     G_OBJECT_CLASS(wlip_shell_parent_class)->dispose(obj);
 }
@@ -77,16 +77,13 @@ wlip_shell_init(WlipShell *self)
  * Create a new shell and start presenting it
  */
 WlipShell *
-wlip_shell_new(WlipDaemon *daemon, WlipList *list)
+wlip_shell_new(WlipDaemon *daemon)
 {
+    g_assert(WLIP_IS_DAEMON(daemon));
+
     WlipShell *shell = g_object_new(WLIP_TYPE_SHELL, NULL);
 
     shell->daemon = g_object_ref(daemon);
-    shell->list = g_object_ref(list);
-
-    shell->view = wlip_view_new(daemon, list);
-    gtk_widget_set_vexpand(shell->view, TRUE);
-    gtk_box_append(GTK_BOX(shell->vbox), shell->view);
 
     gtk_window_present(GTK_WINDOW(shell->win));
 
