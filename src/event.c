@@ -8,6 +8,10 @@
 
 static _Thread_local volatile sig_atomic_t  GOT_SIGNAL = false;
 static _Thread_local volatile sig_atomic_t *SIGACTIVE = NULL;
+static _Thread_local int SIGCOUNT = 0; // Number of signals currently being
+                                       // handled by event loops in this thread.
+                                       // Used to free SIGACTIVE when no more
+                                       // signals being handled.
 
 /*
  * Because sigaction() applies to all threads, must keep a reference count per
@@ -15,26 +19,6 @@ static _Thread_local volatile sig_atomic_t *SIGACTIVE = NULL;
  */
 static int            *SIG_REFCOUNT = NULL;
 static pthread_mutex_t SIGREFCOUNT_MUT = PTHREAD_MUTEX_INITIALIZER;
-
-static bool
-sigarray_is_empty(void)
-{
-    bool empty = true;
-
-    pthread_mutex_lock(&SIGREFCOUNT_MUT);
-    if (SIG_REFCOUNT != NULL)
-    {
-        for (int i = 0; i < SIGRTMAX; i++)
-            if (SIG_REFCOUNT[i] > 0)
-            {
-                empty = false;
-                break;
-            }
-    }
-    pthread_mutex_unlock(&SIGREFCOUNT_MUT);
-
-    return empty;
-}
 
 /*
  * Initialize the event loop. Returns OK on success and FAIL on failure.
@@ -84,7 +68,7 @@ eventloop_init(struct eventloop *loop)
     if (loop->sig_handlers == NULL)
     {
         log_errerror("Error allocating signal handler array");
-        if (alloced_sig_active && sigarray_is_empty())
+        if (alloced_sig_active && SIGCOUNT == 0)
         {
             free((void *)SIGACTIVE);
             SIGACTIVE = NULL;
@@ -113,7 +97,7 @@ eventloop_uninit(struct eventloop *loop)
 
     pthread_sigmask(SIG_SETMASK, &loop->sigmask, NULL);
 
-    if (sigarray_is_empty())
+    if (SIGCOUNT == 0)
     {
         free((void *)SIGACTIVE);
         SIGACTIVE = NULL;
@@ -374,6 +358,10 @@ eventloop_add_signal(
         return FAIL;
     }
 
+    // Make sure that signal is unblocked when calling ppoll()
+    sigdelset(&loop->sigmask, signo);
+    SIGCOUNT++;
+
     loop->sig_handlers[signo].callback = callback;
     loop->sig_handlers[signo].udata = udata;
 
@@ -393,6 +381,7 @@ eventloop_del_signal(struct eventloop *loop, int signo)
     if (loop->sig_handlers[signo].callback == NULL)
         return OK;
     loop->sig_handlers[signo].callback = NULL;
+    SIGCOUNT--;
 
     pthread_mutex_lock(&SIGREFCOUNT_MUT);
     bool last_ref = SIG_REFCOUNT[signo] > 0 && --SIG_REFCOUNT[signo] == 0;
