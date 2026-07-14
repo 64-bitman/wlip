@@ -63,8 +63,6 @@ enum mime_type_class
     MIMETYPE_CLASS_IMAGE
 };
 
-typedef void (*userdata_callback)(void *udata);
-
 // Note that callback takes ownership of "obj"
 typedef void (*json_callback)(struct json_object *obj, void *udata);
 
@@ -78,15 +76,6 @@ bool match_regex_array(regex_t *arr, int len, const char *target);
 int create_lock(const char *path, int *lock_fd);
 pid_t lock_is_locked(const char *path);
 
-const char *get_json_string(struct json_object *obj, const char *member);
-int get_json_string_len(struct json_object *obj, const char *member);
-int get_json_integer(struct json_object *obj, const char *member, int64_t *store);
-int get_json_boolean(struct json_object *obj, const char *member, bool *store);
-const char *get_json_arr_string(struct json_object *arr, size_t idx);
-void add_json_integer(struct json_object *obj, const char *key, int64_t val, bool key_is_static);
-void add_json_boolean(struct json_object *obj, const char *key, bool val, bool key_is_static);
-void add_json_string(struct json_object *obj, const char *key, const char *val, bool key_is_static);
-void add_json_arr_string(struct json_object *arr, const char *val);
 struct json_object *build_json_object_va(struct json_object *obj, const char *fmt, va_list ap);
 struct json_object *build_json_object(struct json_object *obj, const char *fmt, ...);
 int extract_json_object(struct json_object *obj, const char *fmt, ...);

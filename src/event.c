@@ -211,8 +211,8 @@ check_timers:
 }
 
 /*
- * Start running the event loop until it is stopped. This function is reentrant.
- * Returns OK on success and FAIL on failure.
+ * Start running the event loop until it is stopped. This function is reentrant
+ * (is it? too lazy to check...). Returns OK on success and FAIL on failure.
 
  */
 int
