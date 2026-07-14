@@ -6,24 +6,34 @@
 #include <pthread.h>
 #include <string.h> // IWYU pragma: keep
 
-struct signalinfo
-{
-    int                   refcount;
-    volatile sig_atomic_t active;
-};
+static _Thread_local volatile sig_atomic_t  GOT_SIGNAL = false;
+static _Thread_local volatile sig_atomic_t *SIGACTIVE = NULL;
 
-static volatile sig_atomic_t GOT_SIGNAL = false;
-static struct signalinfo    *SIGARRAY = NULL;
+/*
+ * Because sigaction() applies to all threads, must keep a reference count per
+ * signal type to determine when to remove a signal handler.
+ */
+static int            *SIG_REFCOUNT = NULL;
+static pthread_mutex_t SIGREFCOUNT_MUT = PTHREAD_MUTEX_INITIALIZER;
 
 static bool
 sigarray_is_empty(void)
 {
-    if (SIGARRAY == NULL)
-        return true;
-    for (int i = 0; i < SIGRTMAX; i++)
-        if (SIGARRAY[i].refcount > 0)
-            return false;
-    return true;
+    bool empty = true;
+
+    pthread_mutex_lock(&SIGREFCOUNT_MUT);
+    if (SIG_REFCOUNT != NULL)
+    {
+        for (int i = 0; i < SIGRTMAX; i++)
+            if (SIG_REFCOUNT[i] > 0)
+            {
+                empty = false;
+                break;
+            }
+    }
+    pthread_mutex_unlock(&SIGREFCOUNT_MUT);
+
+    return empty;
 }
 
 /*
@@ -39,22 +49,46 @@ eventloop_init(struct eventloop *loop)
         return FAIL;
     }
 
-    if (SIGARRAY == NULL)
+    bool alloced_sig_active = false;
+
+    if (SIGACTIVE == NULL)
     {
-        SIGARRAY = calloc(SIGRTMAX, sizeof(*SIGARRAY));
-        if (SIGARRAY == NULL)
+        SIGACTIVE = calloc(SIGRTMAX, sizeof(*SIGACTIVE));
+        if (SIGACTIVE == NULL)
         {
             log_errerror("Error allocating signal array");
             return FAIL;
         }
+        alloced_sig_active = true;
     }
+
+    pthread_mutex_lock(&SIGREFCOUNT_MUT);
+    if (SIG_REFCOUNT == NULL)
+    {
+        SIG_REFCOUNT = calloc(SIGRTMAX, sizeof(*SIG_REFCOUNT));
+        if (SIG_REFCOUNT == NULL)
+        {
+            pthread_mutex_unlock(&SIGREFCOUNT_MUT);
+            log_errerror("Error allocating signal refcount array");
+            if (alloced_sig_active)
+            {
+                free((void *)SIGACTIVE);
+                SIGACTIVE = NULL;
+            }
+            return FAIL;
+        }
+    }
+    pthread_mutex_unlock(&SIGREFCOUNT_MUT);
 
     loop->sig_handlers = calloc(SIGRTMAX, sizeof(*loop->sig_handlers));
     if (loop->sig_handlers == NULL)
     {
         log_errerror("Error allocating signal handler array");
-        if (sigarray_is_empty())
-            free((void *)SIGARRAY);
+        if (alloced_sig_active && sigarray_is_empty())
+        {
+            free((void *)SIGACTIVE);
+            SIGACTIVE = NULL;
+        }
         return FAIL;
     }
 
@@ -77,10 +111,16 @@ eventloop_uninit(struct eventloop *loop)
         !wl_list_empty(&loop->prepares))
         log_warn("Event loop still has sources active");
 
-    sigprocmask(SIG_SETMASK, &loop->sigmask, NULL);
+    pthread_sigmask(SIG_SETMASK, &loop->sigmask, NULL);
 
     if (sigarray_is_empty())
-        clear(SIGARRAY);
+    {
+        free((void *)SIGACTIVE);
+        SIGACTIVE = NULL;
+    }
+    else
+        log_warn("Event loop still has signals attached");
+
     free(loop->sig_handlers);
 }
 
@@ -153,10 +193,9 @@ eventloop_poll(struct eventloop *loop)
 
                 for (int i = 0; i < SIGRTMAX; i++)
                 {
-                    struct signalinfo *info = SIGARRAY + i;
-                    bool               was = info->active;
+                    bool was = SIGACTIVE[i];
 
-                    info->active = false;
+                    SIGACTIVE[i] = false;
                     if (was && loop->sig_handlers[i].callback != NULL)
                         loop->sig_handlers[i].callback(
                             i, loop->sig_handlers[i].udata
@@ -257,6 +296,9 @@ eventloop_add_source(struct eventloop *loop, struct eventsource *source)
 {
     struct eventsource *p;
 
+    if (!wl_list_empty(&source->link))
+        return;
+
     wl_list_for_each(p, &loop->sources, link)
     {
         if (p->priority > source->priority)
@@ -281,12 +323,17 @@ eventloop_add_prepare(struct eventloop *loop, struct eventprepare *prepare)
     wl_list_insert(p->link.prev, &prepare->link);
 }
 
+/*
+ * Runs on the stack of whichever thread the signal was delivered to. Only
+ * ever touches that thread's own thread-local GOT_SIGNAL/SIGACTIVE, so no
+ * locking is needed and this stays async-signal-safe.
+ */
 static void
 signal_handler(int signo)
 {
     GOT_SIGNAL = true;
-    if (SIGARRAY != NULL)
-        SIGARRAY[signo].active = true;
+    if (SIGACTIVE != NULL)
+        SIGACTIVE[signo] = true;
 }
 
 /*
@@ -329,7 +376,10 @@ eventloop_add_signal(
 
     loop->sig_handlers[signo].callback = callback;
     loop->sig_handlers[signo].udata = udata;
-    SIGARRAY[signo].refcount++;
+
+    pthread_mutex_lock(&SIGREFCOUNT_MUT);
+    SIG_REFCOUNT[signo]++;
+    pthread_mutex_unlock(&SIGREFCOUNT_MUT);
 
     return OK;
 }
@@ -344,7 +394,11 @@ eventloop_del_signal(struct eventloop *loop, int signo)
         return OK;
     loop->sig_handlers[signo].callback = NULL;
 
-    if (SIGARRAY[signo].refcount == 0 || --SIGARRAY[signo].refcount > 0)
+    pthread_mutex_lock(&SIGREFCOUNT_MUT);
+    bool last_ref = SIG_REFCOUNT[signo] > 0 && --SIG_REFCOUNT[signo] == 0;
+    pthread_mutex_unlock(&SIGREFCOUNT_MUT);
+
+    if (!last_ref)
         return OK;
 
     struct sigaction sa = {0};
