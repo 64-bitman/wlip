@@ -458,6 +458,13 @@ try_write:
             wl_container_of(ct->write_queue.next, resp, link);
         ssize_t w;
 
+        if (resp == NULL)
+        {
+            // Not sure if this can happen but handle it
+            ct->source.events = POLLIN;
+            return;
+        }
+
         if (resp->remaining == 0)
             w = write(ct->source.fd, "\n", 1);
         else
