@@ -3,7 +3,8 @@
 #include "util.h"
 #include <errno.h> // IWYU pragma: keep
 #include <poll.h>
-#include <string.h>
+#include <pthread.h>
+#include <string.h> // IWYU pragma: keep
 
 struct signalinfo
 {
@@ -32,7 +33,7 @@ int
 eventloop_init(struct eventloop *loop)
 {
     // Get current signal mask
-    if (sigprocmask(SIG_BLOCK, NULL, &loop->sigmask) == -1)
+    if (pthread_sigmask(SIG_BLOCK, NULL, &loop->sigmask) == -1)
     {
         log_errerror("Error getting signal mask");
         return FAIL;
@@ -308,7 +309,7 @@ eventloop_add_signal(
     sigemptyset(&mask);
     sigaddset(&mask, signo);
 
-    if (sigprocmask(SIG_BLOCK, &mask, &orig) == -1)
+    if (pthread_sigmask(SIG_BLOCK, &mask, &orig) == -1)
     {
         log_errwarn("Error blocking signal %d", signo);
         return FAIL;
@@ -322,7 +323,7 @@ eventloop_add_signal(
     if (sigaction(signo, &sa, NULL) == -1)
     {
         log_errwarn("Error setting signal handler for %d", signo);
-        sigprocmask(SIG_SETMASK, &orig, NULL);
+        pthread_sigmask(SIG_SETMASK, &orig, NULL);
         return FAIL;
     }
 
@@ -362,7 +363,7 @@ eventloop_del_signal(struct eventloop *loop, int signo)
     sigemptyset(&unblock);
     sigaddset(&unblock, signo);
 
-    if (sigprocmask(SIG_UNBLOCK, &unblock, NULL) < 0)
+    if (pthread_sigmask(SIG_UNBLOCK, &unblock, NULL) < 0)
         log_errwarn("Error unblocking signal %d", signo);
     return OK;
 }
