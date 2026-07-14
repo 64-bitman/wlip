@@ -4,6 +4,7 @@
 #include <regex.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h> // IWYU pragma: keep
 #include <wayland-util.h>
 

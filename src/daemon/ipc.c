@@ -421,7 +421,7 @@ ipc_connection_check(int revents, void *udata)
 {
     struct ipc_connection *ct = udata;
 
-    if (!(revents & POLLIN) && !(revents & POLLOUT))
+    if (!(revents & (POLLIN | POLLOUT)))
     {
         ipc_connection_free(ct);
         return;
@@ -434,7 +434,10 @@ ipc_connection_check(int revents, void *udata)
 
     if (r == -1)
     {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            goto try_write;
         log_errwarn("Error reading from IPC connection");
+        ipc_connection_free(ct);
         return;
     }
     else if (r == 0)
@@ -485,8 +488,15 @@ try_write:
             }
         }
 
-        if (w == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        if (w == -1)
+        {
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+            {
+                log_errwarn("Error writing to IPC connection");
+                ipc_connection_free(ct);
+            }
             return;
+        }
 
         // Go onto next response if any
         wl_list_remove(&resp->link);
