@@ -68,6 +68,8 @@ wlip_init(
             database_save_int_setting(&wlip->database, "Last_entry", id);
         }
 
+    wayland_set_selection(&wlip->wayland, id, false);
+
     return OK;
 }
 
