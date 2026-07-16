@@ -1,8 +1,6 @@
 #include "wayland.h"
 #include "event.h"
 #include "util.h"
-#include <string.h>
-#include <sys/mman.h>
 
 // clang-format off
 // clang-format on
@@ -19,6 +17,7 @@ wayland_init(struct wayland *wayland, struct eventloop *loop)
         return FAIL;
 
     wl_list_init(&wayland->seats);
+    wl_list_init(&wayland->outputs);
 
     return OK;
 }
@@ -27,5 +26,17 @@ void
 wayland_uninit(struct wayland *wayland)
 {
     wayland_base_uninit(&wayland->base);
-    close(wayland->buffd);
+}
+
+struct wayland_output *
+wayland_find_output(struct wayland *wayland, const char *name)
+{
+    struct wayland_output *output;
+
+    wl_list_for_each(output, &wayland->outputs, link)
+    {
+        if (output->name != NULL && strcmp(output->name, name) == 0)
+            return output;
+    }
+    return NULL;
 }

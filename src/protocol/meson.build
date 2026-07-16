@@ -31,10 +31,10 @@ endforeach
 picker_protocols = [
   'wlr-layer-shell-unstable-v1',
   'cursor-shape-v1',
-  'xdg-output-unstable-v1',
   'xdg-shell',
   'tablet-v2',
-  'fractional-scale-v1'
+  'fractional-scale-v1',
+  'viewporter'
 ]
 picker_proto_sources = []
 

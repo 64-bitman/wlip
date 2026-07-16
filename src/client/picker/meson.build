@@ -1,6 +1,8 @@
 sources = files(
   'main.c',
-  'wayland.c'
+  'wayland.c',
+  'buffer.c',
+  'surface.c'
 )
 includes = include_directories('.')
 
