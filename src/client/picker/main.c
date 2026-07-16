@@ -1,4 +1,5 @@
 #include "event.h"
+#include "ipc_client.h"
 #include "log.h"
 #include "util.h"
 #include "wayland.h"
@@ -16,8 +17,9 @@ signal_handler(int signo UNUSED, void *udata)
 int
 main(int argc UNUSED, char **argv UNUSED)
 {
-    struct eventloop loop;
-    struct wayland   wayland;
+    struct eventloop  loop;
+    struct ipc_client client;
+    struct wayland    wayland;
 
     log_init(NULL);
     // Temporary
@@ -31,11 +33,19 @@ main(int argc UNUSED, char **argv UNUSED)
         eventloop_add_signal(&loop, SIGPIPE, ignore_signal, &loop) == FAIL)
         goto exit;
 
-    wayland_init(&wayland, &loop);
+    if (ipc_client_init(&client, &loop, NULL, NULL) == FAIL)
+        goto exit;
+
+    if (wayland_init(&wayland, &loop) == FAIL)
+    {
+        ipc_client_uninit(&client);
+        goto exit;
+    }
 
     eventloop_run(&loop);
 
     wayland_uninit(&wayland);
+    ipc_client_uninit(&client);
 
 exit:
     eventloop_del_signal(&loop, SIGTERM);
