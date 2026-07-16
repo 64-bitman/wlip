@@ -64,6 +64,9 @@ enum mime_type_class
     MIMETYPE_CLASS_IMAGE
 };
 
+typedef unsigned int  uint;
+typedef unsigned char uchar;
+
 // Note that callback takes ownership of "obj"
 typedef void (*json_callback)(struct json_object *obj, void *udata);
 

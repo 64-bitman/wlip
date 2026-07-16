@@ -405,12 +405,11 @@ build_json_object(struct json_object *obj, const char *fmt, ...)
 /*
  * Opposite of build_json_object(), uses same format string style.
  *
- *
  * Difference is that each value is a pointer to where the value should be
  * stored. If type character is prefixed by '?', then it is optional, arg after
  * key name will be a boolean pointer indicating if key was found. For 'o' type,
- * arg after key name and '?' is expected json type (no reference will be
- * added).
+ * arg after key name and '?' arg (if any), is expected json type (no reference
+ * will be added).
  *
  * Returns OK on success and FAIL on failure.
  */

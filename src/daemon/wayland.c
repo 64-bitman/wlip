@@ -148,16 +148,22 @@ wayland_set_selection(struct wayland *wayland, int64_t id, bool update)
     if (wayland->entry_id != -1)
         ipc_emit_event(
             &wayland->wlip->ipc,
-            IPC_EVENT_STATE,
+            IPC_EVENT_UPDATE,
             "ib",
             IPC_ID,
             wayland->entry_id,
-            "set",
+            "current",
             false
         );
     if (id != -1)
         ipc_emit_event(
-            &wayland->wlip->ipc, IPC_EVENT_STATE, "ib", IPC_ID, id, "set", true
+            &wayland->wlip->ipc,
+            IPC_EVENT_UPDATE,
+            "ib",
+            IPC_ID,
+            id,
+            "current",
+            true
         );
 
     wayland->entry_id = id;

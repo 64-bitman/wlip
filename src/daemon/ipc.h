@@ -29,23 +29,17 @@
  * Position in history of entry before deletion
  */
 #define IPC_EVENT_DELETE "entry_deleted"
+
 /*
- * Emitted when current entry is updated. Arguments:
- * "id": int64_t
- * ID of entry that was used
- * "set": boolean
- * If true, entry was set as the current entry, otherwise entry was unset as the
- * current entry.
- */
-#define IPC_EVENT_STATE "current_state_updated"
-/*
- * Emitted when entry starred state or update time is changed. Arguments:
+ * Emitted when entry is updated. Arguments:
  * "id": int64_t
  * ID of entry that was changed
  * ?"update_time": int64_t
  * New update time
  * ?"starred": boolean
  * New starred state
+ * ?"curretn": boolean
+ * If entry is now the current entry or not
  *
  * Either may be excluded (if it was not changed), but at least one argument
  * will be present.
