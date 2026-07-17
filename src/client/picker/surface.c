@@ -1,5 +1,7 @@
 #include "surface.h"
+#include "log.h"
 #include "util.h"
+#include "wayland.h"
 
 // clang-format off
 static void surf_event_enter(void *udata, struct wl_surface *proxy, struct wl_output *out);
@@ -29,12 +31,28 @@ static const struct wp_fractional_scale_v1_listener frac_listener = {
 };
 // clang-format on
 
+/*
+ * Initialize the surface for the given output. If "output_name" is NULL, then
+ * let the compositor decide which output to use.
+ */
 int
 surface_init(
-    struct surface *surf, struct wayland *wayland, const char *output_name
+    struct surface *surf,
+    struct wayland *wayland,
+    uint32_t        w,
+    uint32_t        h,
+    const char     *output_name
 )
 {
-    struct wayland_output *output = wayland_find_output(wayland, output_name);
+    struct wayland_output *output = NULL;
+
+    if (output_name != NULL)
+    {
+        output = wayland_find_output(wayland, output_name);
+
+        if (output == NULL)
+            return FAIL;
+    }
 
     surf->surf = wl_compositor_create_surface(wayland->compositor);
 
@@ -43,10 +61,17 @@ surface_init(
     surf->lsurf = zwlr_layer_shell_v1_get_layer_surface(
         wayland->layer_shell,
         surf->surf,
-        output->proxy,
+        output == NULL ? NULL : output->proxy,
         ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
         "wlippicker"
     );
+
+    zwlr_layer_surface_v1_set_size(surf->lsurf, w, h);
+    zwlr_layer_surface_v1_set_keyboard_interactivity(
+        surf->lsurf, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
+    );
+
+    wl_surface_commit(surf->surf);
 
     zwlr_layer_surface_v1_add_listener(surf->lsurf, &lsurf_listener, surf);
 
@@ -60,6 +85,10 @@ surface_init(
 
     surf->vport = wp_viewporter_get_viewport(wayland->vporter, surf->surf);
     surf->scale = 1.0;
+    surf->width = w;
+    surf->height = h;
+    surf->wayland = wayland;
+    surf->dirty = true;
 
     return OK;
 }
@@ -73,39 +102,95 @@ surface_uninit(struct surface *surf)
     zwlr_layer_surface_v1_destroy(surf->lsurf);
     wl_surface_destroy(surf->surf);
 
-    buffer_pool_uninit(&surf->pool);
+    for (int i = 0; i < 2; i++)
+        buffer_uninit(surf->buffers + i);
+
+    memset(surf, 0, sizeof(*surf));
+}
+
+static void
+surface_redraw(struct surface *surf, uint32_t w, uint32_t h, double scale)
+{
+    if (!surf->dirty && surf->width == w && surf->height == h &&
+        fabs(scale - surf->scale) < 0.01)
+        return;
+
+    surf->width = w;
+    surf->height = h;
+    surf->scale = scale;
+
+    surf->cur_buffer = buffer_get_next(
+        surf->buffers, surf->wayland->shm, w * scale, h * scale
+    );
+    if (surf->cur_buffer == NULL)
+        return;
+
+    zwlr_layer_surface_v1_set_size(surf->lsurf, w, h);
+
+    struct buffer *buffer = surf->cur_buffer;
+
+    cairo_scale(buffer->cr, scale, scale);
+
+    cairo_set_source_rgb(buffer->cr, 1.0, 0.0, 0.0);
+    cairo_paint(buffer->cr);
+    cairo_surface_flush(buffer->csurf);
+
+    if (surf->frac != NULL)
+    {
+        wl_surface_set_buffer_scale(surf->surf, 1);
+        wp_viewport_set_destination(surf->vport, surf->width, surf->height);
+    }
+    else
+    {
+        wl_surface_set_buffer_scale(surf->surf, (int32_t)surf->scale);
+        wp_viewport_set_destination(surf->vport, -1, -1);
+    }
+
+    wl_surface_attach(surf->surf, buffer->buffer, 0, 0);
+    wl_surface_damage_buffer(surf->surf, 0, 0, w * scale, h * scale);
+    wl_surface_commit(surf->surf);
+    buffer->busy = true;
+    surf->dirty = false;
 }
 
 static void
 surf_event_enter(
-    void *udata, struct wl_surface *proxy UNUSED, struct wl_output *out
+    void *udata              UNUSED,
+    struct wl_surface *proxy UNUSED,
+    struct wl_output *out    UNUSED
 )
 {
-    struct surface        *surf = udata;
-    struct wayland_output *output = wl_output_get_user_data(out);
 }
 
 static void
 surf_event_leave(
-    void *udata, struct wl_surface *proxy UNUSED, struct wl_output *out
+    void *udata              UNUSED,
+    struct wl_surface *proxy UNUSED,
+    struct wl_output *out    UNUSED
 )
 {
-    struct surface        *surf = udata;
-    struct wayland_output *output = wl_output_get_user_data(out);
 }
 
 static void
 surf_event_preferred_buffer_scale(
-    void *udata, struct wl_surface *proxy, int32_t factor
+    void *udata, struct wl_surface *proxy UNUSED, int32_t factor
 )
 {
+    struct surface *surf = udata;
+
+    if (surf->frac == NULL)
+    {
+        log_debug("New buffer scale: %d", factor);
+        surface_redraw(surf, surf->width, surf->height, (double)factor);
+    }
 }
 
 static void
 surf_event_preferred_buffer_transform(
-    void *udata, struct wl_surface *proxy, uint32_t transform
+    void *udata UNUSED, struct wl_surface *proxy, uint32_t transform UNUSED
 )
 {
+    wl_surface_set_buffer_transform(proxy, WL_OUTPUT_TRANSFORM_NORMAL);
 }
 
 static void
@@ -117,16 +202,30 @@ lsurf_event_configure(
     uint32_t                      h
 )
 {
+    struct surface *surf = udata;
+
+    zwlr_layer_surface_v1_ack_configure(proxy, serial);
+
+    surface_redraw(surf, w, h, surf->scale);
 }
 
 static void
-lsurf_event_closed(void *udata, struct zwlr_layer_surface_v1 *proxy)
+lsurf_event_closed(void *udata, struct zwlr_layer_surface_v1 *proxy UNUSED)
 {
+    struct surface *surf = udata;
+
+    log_info("Surface closed");
+    surface_uninit(surf);
 }
 
 static void
 frac_event_preferred_scale(
-    void *udata, struct wp_fractional_scale_v1 *proxy, uint32_t scale
+    void *udata, struct wp_fractional_scale_v1 *proxy UNUSED, uint32_t scale
 )
 {
+    struct surface *surf = udata;
+    double          factor = (double)scale / 120;
+
+    log_debug("New surface scale: %u/120 = %lf", scale, factor);
+    surface_redraw(surf, surf->width, surf->height, factor);
 }

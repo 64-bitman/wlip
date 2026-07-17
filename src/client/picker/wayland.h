@@ -2,6 +2,7 @@
 
 #include "event.h"
 #include "fractional-scale-v1.h"
+#include "surface.h"
 #include "viewporter.h"
 #include "wayland_base.h"
 #include "wlr-layer-shell-unstable-v1.h"
@@ -49,6 +50,8 @@ struct wayland
     struct zwlr_layer_shell_v1            *layer_shell;
     struct wp_fractional_scale_manager_v1 *frac_mgr;
     struct wp_viewporter                  *vporter;
+
+    struct surface surf;
 };
 
 // clang-format off
