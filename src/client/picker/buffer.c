@@ -62,6 +62,8 @@ buffer_init(struct buffer *buffer, uint32_t w, uint32_t h, struct wl_shm *shm)
 
     buffer->busy = false;
 
+    buffer->pango = pango_cairo_create_context(buffer->cr);
+
     wl_shm_pool_destroy(shm_pool);
     close(fd);
 
@@ -87,6 +89,8 @@ buffer_uninit(struct buffer *buffer)
         wl_buffer_destroy(buffer->buffer);
     if (buffer->data != NULL)
         munmap(buffer->data, buffer->sz);
+    if (buffer->pango != NULL)
+        g_object_unref(buffer->pango);
     memset(buffer, 0, sizeof(*buffer));
 }
 

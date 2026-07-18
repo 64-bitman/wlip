@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cairo.h>
+#include <pango/pangocairo.h>
 #include <stdbool.h>
 #include <wayland-client.h>
 
@@ -9,6 +10,7 @@ struct buffer
     struct wl_buffer *buffer; // NULL if not initialized
     cairo_surface_t  *csurf;
     cairo_t          *cr;
+    PangoContext     *pango;
 
     void  *data;
     size_t sz;

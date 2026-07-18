@@ -10,6 +10,31 @@ static const struct wl_registry_listener registry_listener = {
     .global = registry_event_global,
     .global_remove = registry_event_global_remove,
 };
+
+static void wayland_seat_new(struct wayland *wayland, struct wl_seat *proxy, uint32_t id);
+static void wayland_seat_free(struct wayland_seat *seat);
+
+static void seat_event_name(void *udata, struct wl_seat *proxy, const char *name);
+static void seat_event_capabilities(void *udata, struct wl_seat *proxy, uint32_t capabilities);
+static const struct wl_seat_listener seat_listener = {
+    .name = seat_event_name,
+    .capabilities = seat_event_capabilities
+};
+
+static void wayland_output_new(struct wayland *wayland, struct wl_output *proxy, uint32_t id);
+static void wayland_output_free(struct wayland_output *output);
+
+static void output_event_scale(void *udata, struct wl_output *proxy, int32_t factor);
+static void output_event_name(void *udata, struct wl_output *proxy, const char *name);
+
+static const struct wl_output_listener output_listener = {
+    .geometry = wayland_event_noop,
+    .mode = wayland_event_noop,
+    .done = wayland_event_noop,
+    .scale = output_event_scale,
+    .name = output_event_name,
+    .description = wayland_event_noop,
+};
 // clang-format on
 
 /*
@@ -41,6 +66,20 @@ wayland_init(struct wayland *wayland, struct eventloop *loop)
 void
 wayland_uninit(struct wayland *wayland)
 {
+    struct wayland_seat *seat, *seat_tmp;
+
+    wl_list_for_each_safe(seat, seat_tmp, &wayland->seats, link)
+    {
+        wayland_seat_free(seat);
+    }
+
+    struct wayland_output *output, *output_tmp;
+
+    wl_list_for_each_safe(output, output_tmp, &wayland->outputs, link)
+    {
+        wayland_output_free(output);
+    }
+
     surface_uninit(&wayland->surf);
 
     wl_compositor_destroy(wayland->compositor);
@@ -76,11 +115,15 @@ registry_event_global(
     }
     else if (strcmp(interface, wl_seat_interface.name) == 0)
     {
-        // TODO
+        struct wl_seat *seat_proxy =
+            wl_registry_bind(proxy, name, &wl_seat_interface, 2);
+        wayland_seat_new(wayland, seat_proxy, name);
     }
     else if (strcmp(interface, wl_output_interface.name) == 0)
     {
-        // TODO
+        struct wl_output *output_proxy =
+            wl_registry_bind(proxy, name, &wl_output_interface, 4);
+        wayland_output_new(wayland, output_proxy, name);
     }
     else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0)
     {
@@ -103,9 +146,32 @@ registry_event_global(
 
 static void
 registry_event_global_remove(
-    void *udata, struct wl_registry *proxy, uint32_t name
+    void *udata, struct wl_registry *proxy UNUSED, uint32_t name
 )
 {
+    struct wayland *wayland = udata;
+
+    struct wayland_seat *seat, *seat_tmp;
+
+    wl_list_for_each_safe(seat, seat_tmp, &wayland->seats, link)
+    {
+        if (seat->id == name)
+        {
+            wayland_seat_free(seat);
+            return;
+        }
+    }
+
+    struct wayland_output *output, *output_tmp;
+
+    wl_list_for_each_safe(output, output_tmp, &wayland->outputs, link)
+    {
+        if (output->id == name)
+        {
+            wayland_output_free(output);
+            return;
+        }
+    }
 }
 
 /*
@@ -122,4 +188,120 @@ wayland_find_output(struct wayland *wayland, const char *name)
             return output;
     }
     return NULL;
+}
+
+void
+wayland_event_noop()
+{
+}
+
+static void
+wayland_seat_new(struct wayland *wayland, struct wl_seat *proxy, uint32_t id)
+{
+    struct wayland_seat *seat = calloc(1, sizeof(*seat));
+
+    if (seat == NULL)
+        return;
+
+    seat->wayland = wayland;
+    seat->proxy = proxy;
+    seat->id = id;
+
+    wl_seat_add_listener(proxy, &seat_listener, seat);
+
+    wl_list_insert(&wayland->seats, &seat->link);
+
+    return;
+}
+
+static void
+wayland_seat_free(struct wayland_seat *seat)
+{
+    wl_seat_destroy(seat->proxy);
+    free(seat->name);
+
+    if (seat->keyboard != NULL)
+        wl_keyboard_destroy(seat->keyboard);
+    if (seat->pointer != NULL)
+        wl_pointer_destroy(seat->pointer);
+    if (seat->touch != NULL)
+        wl_touch_destroy(seat->touch);
+
+    wl_list_remove(&seat->link);
+    free(seat);
+}
+
+static void
+seat_event_name(void *udata, struct wl_seat *proxy UNUSED, const char *name)
+{
+    struct wayland_seat *seat = udata;
+
+    free(seat->name);
+    seat->name = strdup(name);
+}
+
+static void
+seat_event_capabilities(
+    void *udata, struct wl_seat *proxy, uint32_t capabilities
+)
+{
+    struct wayland_seat *seat = udata;
+
+    if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD)
+    {
+        if (seat->keyboard == NULL)
+            seat->keyboard = wl_seat_get_keyboard(proxy);
+    }
+}
+
+static void
+wayland_output_new(
+    struct wayland *wayland, struct wl_output *proxy, uint32_t id
+)
+{
+    struct wayland_output *output = calloc(1, sizeof(*output));
+
+    if (output == NULL)
+        return;
+
+    output->wayland = wayland;
+    output->proxy = proxy;
+    output->id = id;
+
+    output->subpixel = WL_OUTPUT_SUBPIXEL_UNKNOWN;
+    output->scale = 1;
+
+    wl_output_add_listener(proxy, &output_listener, output);
+
+    wl_list_insert(&wayland->outputs, &output->link);
+}
+
+static void
+wayland_output_free(struct wayland_output *output)
+{
+    wl_output_destroy(output->proxy);
+    free(output->name);
+
+    if (output->wayland->surf.output == output)
+        output->wayland->surf.output = NULL;
+
+    wl_list_remove(&output->link);
+    free(output);
+}
+
+static void
+output_event_scale(void *udata, struct wl_output *proxy UNUSED, int32_t factor)
+{
+    struct wayland_output *output = udata;
+
+    output->scale = factor;
+}
+
+static void
+output_event_name(void *udata, struct wl_output *proxy UNUSED, const char *name)
+{
+    struct wayland_output *output = udata;
+
+    free(output->name);
+    output->name = strdup(name);
 }

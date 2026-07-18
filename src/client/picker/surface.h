@@ -10,13 +10,16 @@ struct wayland;
 
 struct surface
 {
-    struct wayland *wayland;
+    struct wayland        *wayland;
+    struct wayland_output *output;
 
     struct wl_surface            *surf; // NULL if closed
     struct zwlr_layer_surface_v1 *lsurf;
     // If NULL, then use "preferred_buffer_scale" event to get scale.
     struct wp_fractional_scale_v1 *frac;
     struct wp_viewport            *vport;
+
+    struct wl_callback *frame_callback;
 
     double scale;
     // In logical pixels

@@ -14,7 +14,7 @@ struct wayland_seat
     struct wayland *wayland;
 
     struct wl_seat *proxy;
-    char           *name; // May be NULL if seat has not been started yet.
+    char           *name; // May be NULL
     uint32_t        id;   // Used to match with global_remove event
 
     // Any of these may be NULL
@@ -33,6 +33,7 @@ struct wayland_output
     char             *name; // May be NULL
     uint32_t          id;
 
+    int32_t                 scale;
     enum wl_output_subpixel subpixel;
 
     struct wl_list link;
@@ -58,4 +59,5 @@ struct wayland
 int wayland_init(struct wayland *wayland, struct eventloop *loop);
 void wayland_uninit(struct wayland *wayland);
 struct wayland_output *wayland_find_output(struct wayland *wayland, const char *name);
+void wayland_event_noop();
 // clang-format on

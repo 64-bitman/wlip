@@ -4,6 +4,11 @@
 #include "wayland.h"
 
 // clang-format off
+static void frame_callback(void *udata, struct wl_callback *callback, uint32_t time);
+static const struct wl_callback_listener frame_callback_listener = {
+    .done = frame_callback
+};
+
 static void surf_event_enter(void *udata, struct wl_surface *proxy, struct wl_output *out);
 static void surf_event_leave(void *udata, struct wl_surface *proxy, struct wl_output *out);
 static void surf_event_preferred_buffer_scale(void *udata, struct wl_surface *proxy, int32_t factor);
@@ -111,6 +116,12 @@ surface_uninit(struct surface *surf)
 static void
 surface_redraw(struct surface *surf, uint32_t w, uint32_t h, double scale)
 {
+    if (wl_list_empty(&surf->wayland->outputs))
+    {
+        surf->dirty = false;
+        return;
+    }
+
     if (!surf->dirty && surf->width == w && surf->height == h &&
         fabs(scale - surf->scale) < 0.01)
         return;
@@ -154,21 +165,81 @@ surface_redraw(struct surface *surf, uint32_t w, uint32_t h, double scale)
 }
 
 static void
-surf_event_enter(
-    void *udata              UNUSED,
-    struct wl_surface *proxy UNUSED,
-    struct wl_output *out    UNUSED
+frame_callback(
+    void *udata, struct wl_callback *callback UNUSED, uint32_t time UNUSED
 )
 {
+    struct surface *surf = udata;
+
+    if (surf->frame_callback != NULL)
+    {
+        wl_callback_destroy(surf->frame_callback);
+        surf->frame_callback = NULL;
+    }
+
+    if (surf->dirty)
+        surface_redraw(surf, surf->width, surf->height, surf->scale);
+}
+
+static void
+surface_frame(struct surface *surf)
+{
+    if (surf->frame_callback != NULL)
+        return;
+
+    surf->frame_callback = wl_surface_frame(surf->surf);
+    wl_callback_add_listener(
+        surf->frame_callback, &frame_callback_listener, surf
+    );
+    wl_surface_commit(surf->surf);
+}
+
+/*
+ * Dirty the surface and schedule a frame callback
+ */
+static void
+surface_dirty(struct surface *surf)
+{
+    if (surf->dirty)
+        return;
+    surf->dirty = true;
+    surface_frame(surf);
+}
+
+static void
+surf_event_enter(
+    void *udata, struct wl_surface *proxy UNUSED, struct wl_output *out
+)
+{
+    struct surface        *surf = udata;
+    struct wayland_output *output = wl_output_get_user_data(out);
+
+    surf->output = output;
+
+    if (output != NULL)
+        log_debug(
+            "Entered output \"%s\"",
+            output->name == NULL ? "(unknown)" : output->name
+        );
+
+    surface_dirty(surf);
 }
 
 static void
 surf_event_leave(
-    void *udata              UNUSED,
-    struct wl_surface *proxy UNUSED,
-    struct wl_output *out    UNUSED
+    void *udata, struct wl_surface *proxy UNUSED, struct wl_output *out UNUSED
 )
 {
+    struct surface        *surf = udata;
+    struct wayland_output *output = wl_output_get_user_data(out);
+
+    surf->output = NULL;
+
+    if (output != NULL)
+        log_debug(
+            "Leave output \"%s\"",
+            output->name == NULL ? "(unknown)" : output->name
+        );
 }
 
 static void
