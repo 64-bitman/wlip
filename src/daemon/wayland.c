@@ -501,11 +501,10 @@ data_offer_event_offer(
     struct wayland_seat *seat = udata;
 
     // Do not save entry if mime type is configured to be blocked.
-    if (seat->wayland->wlip->config.blocked_mime_types.data != NULL &&
+    if (seat->wayland->wlip->config.blocked_mime_types != NULL &&
         match_regex_array(
-            seat->wayland->wlip->config.blocked_mime_types.data,
-            seat->wayland->wlip->config.blocked_mime_types.size /
-                sizeof(regex_t),
+            seat->wayland->wlip->config.blocked_mime_types,
+            seat->wayland->wlip->config.blocked_mime_types_len,
             mime_type
         ))
     {
@@ -514,11 +513,10 @@ data_offer_event_offer(
     }
 
     // Check if mime type is allowed to be saved
-    if (seat->wayland->wlip->config.allowed_mime_types.data != NULL &&
+    if (seat->wayland->wlip->config.allowed_mime_types != NULL &&
         !match_regex_array(
-            seat->wayland->wlip->config.allowed_mime_types.data,
-            seat->wayland->wlip->config.allowed_mime_types.size /
-                sizeof(regex_t),
+            seat->wayland->wlip->config.allowed_mime_types,
+            seat->wayland->wlip->config.allowed_mime_types_len,
             mime_type
         ))
         return;

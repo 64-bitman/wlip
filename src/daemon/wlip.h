@@ -22,9 +22,6 @@ struct wlip
     struct database   database;
     struct ipc        ipc;
 
-    struct signal_handler sigterm;
-    struct signal_handler sigint;
-
     // Hash of last/most recent selection event. Used to check if a new
     // selection event is the same in terms of mime types and data.
     uint8_t selection_hash[SHA256_BLOCK_SIZE];

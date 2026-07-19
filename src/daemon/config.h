@@ -37,11 +37,13 @@ struct config
 
     // Array of regex_t of mime types that are allowed to be saved. If NULL,
     // then assume all mime types.
-    struct wl_array allowed_mime_types;
+    regex_t *allowed_mime_types;
+    uint32_t allowed_mime_types_len;
 
     // Array of regex_t of mime types that will make the entry be ignored if
     // found. If NULL, then no mime types are blocked.
-    struct wl_array blocked_mime_types;
+    regex_t *blocked_mime_types;
+    uint32_t blocked_mime_types_len;
 };
 
 // clang-format off

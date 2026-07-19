@@ -3,6 +3,7 @@
 #include "log.h"
 #include "tomlc17.h"
 #include "util.h"
+#include <assert.h>
 #include <errno.h> // IWYU pragma: keep
 #include <regex.h>
 #include <stdlib.h>
@@ -10,7 +11,8 @@
 #include <unistd.h>
 
 // clang-format off
-static int save_pattern_array(toml_datum_t tab, const char *key, struct wl_array *store);
+static int extract_seats(const char *key UNUSED, toml_datum_t dat, void *vstore);
+static int extract_pattern_array(const char *key UNUSED, toml_datum_t dat, void *vstore);
 // clang-format on
 
 /*
@@ -21,131 +23,73 @@ int
 config_init(struct config *config, const char *cfgdir)
 {
     toml_result_t result;
+    int           ret = config_parse("wlip", cfgdir, "config.toml", &result);
 
-    if (config_parse("wlip", cfgdir, &result) == FAIL)
+    if (ret == FAIL)
         return FAIL;
 
     // clang-format off
-    struct config_basic_option basic_options[] = {
-        {
-            .key = "wlip.display",
-            .type = TOML_STRING,
-            .store = &config->display_name,
-            .def.str = NULL
-        },
-        {
-            .key = "wlip.max_entries",
-            .type = TOML_INT64,
-            .store = &config->max_entries,
-            .def.int64 = 100
-        },
-        {
-            .key = "wlip.max_size",
-            .type = TOML_INT64,
-            .store = &config->max_size,
-            .def.int64 = 10000000 // 10 MB
-        },
-        {
-            .key = "wlip.persist",
-            .type = TOML_BOOLEAN,
-            .store = &config->persist,
-            .def.boolean = true
-        },
-        {
-            .key = "wlip.page_size",
-            .type = TOML_INT64,
-            .store = &config->page_size,
-            .def.int64 = 4096
-        },
-        {
-            .key = "wlip.cache_size",
-            .type = TOML_INT64,
-            .store = &config->cache_size,
-            .def.int64 = 1000
-        }
+    *config = (struct config){
+        .display_name = NULL,
+        .max_entries = 100,
+        .persist = true,
+        .max_size = 10000000, // 10 MB
+
+        .page_size = 4096,
+        .cache_size = 1000,
+
+        .configured_seats = NULL,
+        .configured_seats_len = 0,
+
+        .allowed_mime_types = NULL,
+        .allowed_mime_types_len = 0,
+
+        .blocked_mime_types = NULL,
+        .blocked_mime_types_len = 0,
     };
     // clang-format on
 
-    if (config_basic_options(
-            result.toptab, basic_options, N_ELEMENTS(basic_options)
-        ) == FAIL)
+    if (ret == IGNORED)
+        return OK;
+
+    ret = config_extract(
+        result.toptab,
+        "siibiiccc",
+        "wlip.display",
+        &config->display_name,
+        "wlip.max_entries",
+        &config->max_entries,
+        "wlip.max_size",
+        &config->max_size,
+        "wlip.persist",
+        &config->persist,
+        "wlip.page_size",
+        &config->page_size,
+        "wlip.cache_size",
+        &config->cache_size,
+        "seats",
+        TOML_TABLE,
+        extract_seats,
+        config,
+        "wlip.allowed_mime_types",
+        TOML_ARRAY,
+        extract_pattern_array,
+        config,
+        "wlip.blocked_mime_types",
+        TOML_ARRAY,
+        extract_pattern_array,
+        config
+    );
+
+    toml_free(result);
+
+    if (ret == FAIL)
     {
-        toml_free(result);
+        config_uninit(config);
         return FAIL;
     }
 
-    config->configured_seats = NULL;
-    config->configured_seats_len = 0;
-    wl_array_init(&config->allowed_mime_types);
-    wl_array_init(&config->blocked_mime_types);
-
-    toml_datum_t t_seats = toml_seek(result.toptab, "seats");
-    int          ret = config_verify_type(t_seats, TOML_TABLE, "seats");
-
-    if (ret == OK)
-    {
-        config->configured_seats =
-            malloc(sizeof(struct config_seat) * t_seats.u.tab.size);
-
-        if (config->configured_seats == NULL)
-        {
-            log_errerror("Error allocating config");
-            goto fail;
-        }
-
-        for (int32_t i = 0; i < t_seats.u.tab.size; i++)
-        {
-            const char  *seatname = t_seats.u.tab.key[i];
-            toml_datum_t t_seat = t_seats.u.tab.value[i];
-
-            ret = config_verify_type(t_seat, TOML_TABLE, "seats.%s", seatname);
-
-            if (ret == OK)
-            {
-                struct config_seat *seat = config->configured_seats + i;
-
-                seat->name = strdup(seatname);
-                if (seat->name == NULL)
-                {
-                    log_errerror("Config: error allocating seat name");
-                    goto fail;
-                }
-
-                if (config_get_boolean(
-                        t_seat, "regular", true, &seat->regular
-                    ) == FAIL ||
-                    config_get_boolean(
-                        t_seat, "primary", true, &seat->primary
-                    ) == FAIL)
-                {
-                    free(seat->name);
-                    goto fail;
-                }
-                config->configured_seats_len++;
-            }
-        }
-    }
-    else if (ret == FAIL)
-        goto fail;
-
-    if (save_pattern_array(
-            result.toptab,
-            "wlip.allowed_mime_types",
-            &config->allowed_mime_types
-        ) == FAIL ||
-        save_pattern_array(
-            result.toptab,
-            "wlip.blocked_mime_types",
-            &config->blocked_mime_types
-        ) == FAIL)
-        goto fail;
-
-    toml_free(result);
     return OK;
-fail:
-    config_uninit(config);
-    toml_free(result);
-    return FAIL;
 }
 
 void
@@ -155,14 +99,63 @@ config_uninit(struct config *config)
         free(config->configured_seats[i].name);
     free(config->configured_seats);
 
-    regex_t *reg;
+    for (uint32_t i = 0; i < config->allowed_mime_types_len; i++)
+        regfree(config->allowed_mime_types + i);
+    free(config->allowed_mime_types);
 
-    wl_array_for_each(reg, &config->allowed_mime_types) { regfree(reg); }
-    wl_array_for_each(reg, &config->blocked_mime_types) { regfree(reg); }
+    for (uint32_t i = 0; i < config->blocked_mime_types_len; i++)
+        regfree(config->blocked_mime_types + i);
+    free(config->blocked_mime_types);
 
-    wl_array_release(&config->blocked_mime_types);
-    wl_array_release(&config->allowed_mime_types);
     free(config->display_name);
+}
+
+static int
+extract_seats(const char *key UNUSED, toml_datum_t dat, void *vstore)
+{
+    struct config *config = vstore;
+
+    config->configured_seats =
+        malloc(sizeof(struct config_seat) * dat.u.tab.size);
+
+    if (config->configured_seats == NULL)
+    {
+        log_errerror("Error allocating config");
+        return FAIL;
+    }
+
+    for (int32_t i = 0; i < dat.u.tab.size; i++)
+    {
+        const char  *seatname = dat.u.tab.key[i];
+        toml_datum_t t_seat = dat.u.tab.value[i];
+
+        if (t_seat.type != TOML_TABLE)
+        {
+            log_error("Config: expected table for seat");
+            return FAIL;
+        }
+
+        struct config_seat *seat = config->configured_seats + i;
+
+        seat->name = strdup(seatname);
+        if (seat->name == NULL)
+        {
+            log_errerror("Config: error allocating seat name");
+            return FAIL;
+        }
+
+        int ret = config_extract(
+            t_seat, "bb", "regular", &seat->regular, "primary", &seat->primary
+        );
+
+        if (ret == FAIL)
+        {
+            free(seat->name);
+            return FAIL;
+        }
+        config->configured_seats_len++;
+    }
+    return OK;
 }
 
 /*
@@ -170,23 +163,43 @@ config_uninit(struct config *config)
  * OK on success and FAIL on failure.
  */
 static int
-save_pattern_array(toml_datum_t tab, const char *key, struct wl_array *store)
+extract_pattern_array(const char *key, toml_datum_t dat, void *vstore)
 {
-    toml_datum_t arr = toml_seek(tab, key);
-    int          ret = config_verify_type(arr, TOML_ARRAY, key);
+    struct config *config = vstore;
+    regex_t      **sarr;
+    regex_t       *arr;
+    uint32_t      *arr_len;
 
-    if (ret == FAIL)
-        return FAIL;
-    else if (ret == IGNORED)
-        return OK;
-
-    for (int32_t i = 0; i < arr.u.arr.size; i++)
+    if (strcmp(key, "wlip.allowed_mime_types") == 0)
     {
-        toml_datum_t t_pattern = arr.u.arr.elem[i];
+        sarr = &config->allowed_mime_types;
+        arr_len = &config->allowed_mime_types_len;
+    }
+    else
+    {
+        sarr = &config->blocked_mime_types;
+        arr_len = &config->blocked_mime_types_len;
+    }
 
-        if (config_verify_type(t_pattern, TOML_STRING, "%s[%d]", key, i) ==
-            FAIL)
+    assert(*sarr == NULL);
+    *sarr = malloc(dat.u.arr.size * sizeof(regex_t));
+    if (*sarr == NULL)
+    {
+        log_errerror("Error allocating pattern array");
+        return FAIL;
+    }
+
+    arr = *sarr;
+
+    for (int32_t i = 0; i < dat.u.arr.size; i++)
+    {
+        toml_datum_t t_pattern = dat.u.arr.elem[i];
+
+        if (t_pattern.type != TOML_STRING)
+        {
+            log_error("Config: expected string for pattern in %s", key);
             return FAIL;
+        }
 
         regex_t re;
         int     res = regcomp(&re, t_pattern.u.s, REG_EXTENDED | REG_NOSUB);
@@ -202,16 +215,9 @@ save_pattern_array(toml_datum_t tab, const char *key, struct wl_array *store)
             return FAIL;
         }
 
-        regex_t *save = wl_array_add(store, sizeof(regex_t));
-
-        if (save == NULL)
-        {
-            log_errerror("Config: error allocating allowed mime types array");
-            regfree(&re);
-            return FAIL;
-        }
-
-        *save = re;
+        arr[i] = re;
+        (*arr_len)++;
     }
+
     return OK;
 }

@@ -7,14 +7,19 @@
 #include <unistd.h>
 
 /*
- * Parse the configuration file in directory "dir". If "cfgdir" is not NULL,
- * then use that as the path to the config directory. Returns OK on success and
- * FAIL on failure.
+ * Parse the configuration file in directory "dir" (inside $XDG_CONFIG_HOME). If
+ * "cfgdir" is not NULL, then use that as the path to the config directory.
+ * Returns OK on success and FAIL on failure, or IGNORED if file does not exist.
  */
 int
-config_parse(const char *dir, const char *cfgdir, toml_result_t *result)
+config_parse(
+    const char    *dir,
+    const char    *cfgdir,
+    const char    *cfgname,
+    toml_result_t *result
+)
 {
-    int   ret = OK;
+    int   ret = FAIL;
     char *tofree = NULL;
     char *config_path = NULL;
 
@@ -26,14 +31,14 @@ config_parse(const char *dir, const char *cfgdir, toml_result_t *result)
     if (cfgdir == NULL)
         return FAIL;
 
-    config_path = wlip_strdup_printf("%s/%s", cfgdir, "config.toml");
+    config_path = wlip_strdup_printf("%s/%s", cfgdir, cfgname);
     if (config_path == NULL)
-        goto fail;
+        goto exit;
 
     if (access(config_path, R_OK) == -1)
     {
-        log_errerror("Error accessing config file '%s'", config_path);
-        goto fail;
+        ret = IGNORED;
+        goto exit;
     }
 
     toml_result_t res = toml_parse_file_ex(config_path);
@@ -45,10 +50,9 @@ config_parse(const char *dir, const char *cfgdir, toml_result_t *result)
     }
 
     *result = res;
+    ret = OK;
 
-    if (false)
-fail:
-        ret = FAIL;
+exit:
 
     free(config_path);
     free(tofree);
@@ -57,170 +61,103 @@ fail:
 }
 
 /*
- * Verifies that the type of "dat" (with key "key") is "type" and return OK if
- * it is, else FAIL. If dat is TOML_UNKNOWN, then return IGNORED.
- */
-int
-config_verify_type(toml_datum_t dat, toml_type_t type, const char *key, ...)
-{
-    if (dat.type == type)
-        return OK;
-    else if (type == STRING_OR_ARRAY &&
-             (dat.type == TOML_STRING || dat.type == TOML_ARRAY))
-        return OK;
-    else if (dat.type != TOML_UNKNOWN)
-    {
-        const char *str;
-
-        switch ((int)type)
-        {
-        case TOML_INT64:
-            str = "an integer";
-            break;
-        case TOML_BOOLEAN:
-            str = "a boolean";
-            break;
-        case TOML_STRING:
-            str = "a string";
-            break;
-        case TOML_TABLE:
-            str = "a table";
-            break;
-        case TOML_ARRAY:
-            str = "an array";
-            break;
-        case STRING_OR_ARRAY:
-            str = "a string or an array";
-            break;
-        default:
-            log_abort("Unsupported TOML type %d", type);
-        }
-
-        va_list     ap;
-        static char buf[256];
-
-        va_start(ap, key);
-        vsnprintf(buf, 256, key, ap);
-        va_end(ap);
-
-        log_error("Config: '%s' is not %s", buf, str);
-        return FAIL;
-    }
-    return IGNORED;
-}
-
-/*
- * Similar to toml_seek(), but returns FAIL on failure and emits error message.
- * If "def" is not NULL, then it is copied when "key" does not exist, otherwise
- * "val" is set to NULL.
- */
-int
-config_get_string(
-    toml_datum_t tab, const char *key, const char *def, char **val
-)
-{
-    toml_datum_t t_val = toml_seek(tab, key);
-    int          ret = config_verify_type(t_val, TOML_STRING, key);
-
-    if (ret == OK)
-    {
-        *val = strdup(t_val.u.s);
-        if (*val == NULL)
-            goto memerror;
-    }
-    else if (ret == IGNORED)
-    {
-        if (def == NULL)
-            *val = NULL;
-        else
-        {
-            *val = strdup(def);
-            if (*val == NULL)
-                goto memerror;
-        }
-    }
-    else
-        return FAIL;
-
-    return OK;
-memerror:
-    log_errerror("Config: Error allocating value for '%s'", key);
-    return FAIL;
-}
-
-int
-config_get_integer(toml_datum_t tab, const char *key, int64_t def, int64_t *val)
-{
-    toml_datum_t t_val = toml_seek(tab, key);
-    int          ret = config_verify_type(t_val, TOML_INT64, key);
-
-    if (ret == OK)
-        *val = t_val.u.int64;
-    else if (ret == IGNORED)
-        *val = def;
-    else
-        return FAIL;
-    return OK;
-}
-
-int
-config_get_boolean(toml_datum_t tab, const char *key, bool def, bool *val)
-{
-    toml_datum_t t_val = toml_seek(tab, key);
-    int          ret = config_verify_type(t_val, TOML_BOOLEAN, key);
-
-    if (ret == OK)
-        *val = t_val.u.boolean;
-    else if (ret == IGNORED)
-        *val = def;
-    else
-        return FAIL;
-    return OK;
-}
-
-/*
- * Get the list of basic options, either of type INT64, BOOLEAN, or STRING.
+ * Extract options from the TOML table, using the types specified in "fmt" in
+ * format of <key name>, <pointer to value store>. If key is not found, nothing
+ * is done.
+ *
+ * "s": const char *
+ * "i": int64_t
+ * "b": boolean
+ * "c": expected TOML type, then custom function specified after key name
+ *
  * Returns OK on success and FAIL on failure.
  */
 int
-config_basic_options(
-    toml_datum_t tab, const struct config_basic_option *options, int len
-)
+config_extract(toml_datum_t table, const char *fmt, ...)
 {
-    for (int i = 0; i < len; i++)
-    {
-        struct config_basic_option option = options[i];
-        int                        ret;
+    va_list ap;
+    int     ret = OK;
 
-        switch (option.type)
+    va_start(ap, fmt);
+    for (const char *c = fmt; *c != NUL; c++)
+    {
+        const char  *key = va_arg(ap, const char *);
+        toml_datum_t dat = toml_seek(table, key);
+        toml_type_t  type = dat.type;
+        const char  *expected_type = NULL;
+        bool         ignore = false;
+
+        if (type == TOML_UNKNOWN)
+            ignore = true;
+
+        switch (*c)
         {
-        case TOML_INT64:
-            ret = config_get_integer(
-                tab, option.key, option.def.int64, option.store
-            );
+        case 's':
+            if (type == TOML_STRING || ignore)
+            {
+                const char **store = va_arg(ap, const char **);
+
+                if (ignore)
+                    break;
+
+                char *str = strdup(dat.u.s);
+
+                if (str != NULL)
+                    *store = str;
+            }
+            else
+                expected_type = "string";
             break;
-        case TOML_BOOLEAN:
-            ret = config_get_boolean(
-                tab, option.key, option.def.boolean, option.store
-            );
+        case 'i':
+            if (type == TOML_INT64 || ignore)
+            {
+                int64_t *store = va_arg(ap, int64_t *);
+
+                if (!ignore)
+                    *store = dat.u.int64;
+            }
+            else
+                expected_type = "integer";
             break;
-        case TOML_STRING:
-            ret = config_get_string(
-                tab, option.key, option.def.str, option.store
-            );
+        case 'b':
+            if (type == TOML_BOOLEAN || ignore)
+            {
+                bool *store = va_arg(ap, bool *);
+
+                if (!ignore)
+                    *store = dat.u.boolean;
+            }
+            else
+                expected_type = "boolean";
             break;
-        default:
-            log_abort("TOML type %d is not a basic type", option.type);
+        case 'c':
+            if (type == va_arg(ap, toml_type_t) || ignore)
+            {
+                config_extract_callback cb =
+                    va_arg(ap, config_extract_callback);
+
+                if (!ignore && cb(key, dat, va_arg(ap, void *)) == FAIL)
+                    ret = FAIL;
+            }
+            else
+            {
+                log_error("Config: unknown value for %s", key);
+                ret = FAIL;
+            }
+            break;
         }
 
         if (ret == FAIL)
+            break;
+
+        if (expected_type != NULL)
         {
-            // Free any previous string options
-            for (int k = 0; k < i; k++)
-                if (options[k].type == TOML_STRING)
-                    free(*(char **)options[k].store);
-            return FAIL;
+            log_error("Config: expected %s for %s", expected_type, key);
+            ret = FAIL;
+            break;
         }
     }
-    return OK;
+    va_end(ap);
+
+    return ret;
 }
